@@ -25,15 +25,15 @@ The statusline will read OAuth tokens from `~/.claude/.credentials.json` automat
 
 ### With Dotfiles (chezmoi)
 
-If you're using the `bovorasr/dotfiles` repo with chezmoi:
+If you're managing dotfiles with chezmoi:
 
 ```bash
-# The statusline scripts are already in the dotfiles
+# Apply dotfiles configuration
 chezmoi apply -v
 
 # Verify installation
 which claude-statusline
-# Should show: /Users/bovorasr/.local/bin/claude-statusline
+# Should show: ~/.local/bin/claude-statusline
 ```
 
 ## OAuth Token Sources (Priority Order)
@@ -78,12 +78,12 @@ Expected output:
 Test the statusline manually:
 
 ```bash
-~/.local/bin/claude-statusline '{"session_id":"test","cost":{"total_cost_usd":12.34},"context_window":{"used_percentage":15},"model":{"display_name":"sonnet"}}'
+~/.local/bin/claude-statusline '{"session_id":"test","cost":{"total_cost_usd":12.34},"context_window":{"used_percentage":15},"model":{"id":"claude-sonnet-4-5-20250929","display_name":"sonnet"}}'
 ```
 
 Expected output (colors may vary):
 ```
-5h:16%~51m | 7d:17%~20h51m = S:10% + O:5% | V:$12.34/$206 | C:15% | sonnet
+5h:7%~3h28m | 7d:18%~18h28m = S:11% + O:245K | V:$12.34/$513 | C:+4/-24d | B:$0/$50 | X:15% | opusplan/sonnet
 ```
 
 ## Platform-Specific Notes

@@ -9,9 +9,10 @@ Portable Claude Code statusline that works on **macOS, Linux, and devcontainers*
   - Credentials file `~/.claude/.credentials.json` (Linux/devcontainers)
   - macOS Keychain (fallback)
 - ✅ **5-hour and 7-day quota percentages** - color-coded (green/yellow/red)
-- ✅ **Per-model contribution breakdown** - Haiku, Sonnet, Opus percentages
+- ✅ **Per-model breakdown** - Sonnet % (API data), Opus/Haiku tokens (for limit inference)
+- ✅ **Billing cycle tracking** - days elapsed/remaining with DST-safe calculation
 - ✅ **Session cost tracking** - see current session spend
-- ✅ **Firebase cross-machine sync** - track monthly totals across all machines (optional)
+- ✅ **Firebase cross-machine sync** - track monthly totals and 7-day token usage across all machines (optional)
 - ✅ **Context window percentage** - monitor token usage
 - ✅ **Model drift detection** - shows both configured and actual model
 - ✅ **Overage tracking** - if you have overage enabled
@@ -87,16 +88,32 @@ Without Firebase, the statusline still works - monthly totals show `?`.
 
 Example statusline:
 ```
-5h:23%~4h51m | 7d:45%~6d2h = S:40% + O:5% | B:$34/$160 | V:$27.58/$160 | C:12% | sonnet/sonnet
+5h:7%~3h28m | 7d:18%~18h28m = S:11% + O:245K | V:$12.34/$513 | C:+4/-24d | B:$0/$50 | X:15% | opusplan/sonnet
 ```
 
-- `5h:23%~4h51m` - 5-hour quota at 23%, resets in 4h51m
-- `7d:45%~6d2h` - 7-day quota at 45%, resets in 6d2h
-- `S:40% + O:5%` - Per-model breakdown (Sonnet 40%, Opus 5%)
-- `B:$34/$160` - Billing overage: $34 used of $160 limit (if enabled)
-- `V:$27.58/$160` - Value: current session ($27.58) / monthly total ($160)
-- `C:12%` - Context window usage at 12%
-- `sonnet/sonnet` - Configured model / Actual model (detects drift)
+**Quota & Usage:**
+- `5h:7%~3h28m` - 5-hour quota at 7%, resets in 3h28m (color: green <70%, yellow 70-90%, red ≥90%)
+- `7d:18%~18h28m` - 7-day quota at 18%, resets in 18h28m (color-coded same as 5h)
+- `S:11%` - Sonnet using 11% of 7-day quota (real API data, color-coded)
+- `O:245K` - Opus used 245K tokens in 7-day window (raw tokens for hidden limit inference)
+- `H:50K` - Haiku tokens (only shown if >0)
+
+**Costs & Billing:**
+- `V:$12.34/$513` - **Value**: current session cost ($12.34) / monthly total across all machines ($513)
+- `C:+4/-24d` - **Cycle**: 4 days elapsed / 24 days remaining in billing cycle (DST-safe)
+- `B:$0/$50` - **Billing overage**: $0 used of $50 limit (only shown if overage enabled)
+
+**Context & Model:**
+- `X:15%` - Context window at 15% usage
+- `opusplan/sonnet` - Configured model (from settings) / Actual model (detects drift when rate-limited)
+
+**Color coding:**
+- Green: <70% quota usage
+- Yellow: 70-90% quota usage
+- Red: ≥90% quota usage (approaching limit)
+- Cyan: Time periods and cycle days
+- Blue: Token counts and synthetic percentages
+- Purple: Cost values
 
 ## Platform Support
 
