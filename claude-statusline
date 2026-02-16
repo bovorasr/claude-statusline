@@ -384,8 +384,8 @@ fi
 DAYS_ELAPSED=$(( (CURRENT_TS - CYCLE_START_TS) / 86400 ))
 DAYS_REMAINING=$(( (CYCLE_END_TS - CURRENT_TS) / 86400 ))
 
-# Display: V:$34.58/$160 | +11/-17d (Value: session/monthly | days elapsed/remaining)
-CYCLE_DAYS="${CYAN}+${DAYS_ELAPSED}${RESET}${DIM}/${RESET}${CYAN}-${DAYS_REMAINING}d${RESET}"
+# Display: V:$34.58/$160 | C:+11/-17d (Value: session/monthly | Cycle: days elapsed/remaining)
+CYCLE_DAYS="C${COLON}${CYAN}+${DAYS_ELAPSED}${RESET}${DIM}/${RESET}${CYAN}-${DAYS_REMAINING}d${RESET}"
 if [[ -n "$OUTPUT" ]]; then
     OUTPUT="$OUTPUT ${SEP} V${COLON}${LIGHT_PURPLE}\$${SESSION_COST_FORMATTED}${RESET}${DIM}/${RESET}${MONTHLY_TOTAL} ${SEP} ${CYCLE_DAYS}"
 else
@@ -399,7 +399,7 @@ fi
 
 # Add context window percentage (from Claude Code session data)
 CONTEXT_PCT=$(echo "$INPUT" | jq -r '.context_window.used_percentage // 0 | round' 2>/dev/null || echo "0")
-OUTPUT="$OUTPUT ${SEP} C${COLON}${BRIGHT_CYAN}${CONTEXT_PCT}%${RESET}"
+OUTPUT="$OUTPUT ${SEP} X${COLON}${BRIGHT_CYAN}${CONTEXT_PCT}%${RESET}"
 
 # Add model information
 # Model in INPUT is an object with {id, display_name}
