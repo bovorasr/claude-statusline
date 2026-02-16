@@ -482,7 +482,9 @@ else
 fi
 
 DAYS_ELAPSED=$(( (CURRENT_TS - CYCLE_START_TS) / 86400 ))
-DAYS_REMAINING=$(( (CYCLE_END_TS - CURRENT_TS) / 86400 ))
+# Calculate remaining from total to avoid timestamp rounding issues (DST, etc.)
+TOTAL_CYCLE=$(( (CYCLE_END_TS - CYCLE_START_TS) / 86400 ))
+DAYS_REMAINING=$(( TOTAL_CYCLE - DAYS_ELAPSED ))
 
 # Display: V:$34.58/$160 | C:+11/-17d (Value: session/monthly | Cycle: days elapsed/remaining)
 CYCLE_DAYS="C${COLON}${CYAN}+${DAYS_ELAPSED}${RESET}${DIM}/${RESET}${CYAN}-${DAYS_REMAINING}d${RESET}"
