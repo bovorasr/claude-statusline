@@ -1,0 +1,192 @@
+#!/usr/bin/env bash
+
+# Calculate API-equivalent cost for current billing cycle
+# Uses daily token stats from ~/.claude/stats-cache.json
+# Usage: claude-billing-cost [--color] [--limit AMOUNT]
+
+set -euo pipefail
+
+# Parse arguments
+USE_COLOR=false
+COST_LIMIT=50  # Default limit
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --color)
+            USE_COLOR=true
+            shift
+            ;;
+        --limit)
+            COST_LIMIT="$2"
+            shift 2
+            ;;
+        *)
+            shift
+            ;;
+    esac
+done
+
+STATS_FILE="$HOME/.claude/stats-cache.json"
+
+if [[ ! -f "$STATS_FILE" ]]; then
+    echo "0.00"
+    exit 0
+fi
+
+# Get subscription creation date to infer billing day
+BILLING_DAY=$(jq -r '.oauthAccount.subscriptionCreatedAt // ""' ~/.claude.json 2>/dev/null | cut -d- -f3 | cut -dT -f1 || echo "12")
+
+# Calculate billing cycle start (current month's billing day, or previous month if before it)
+CURRENT_DATE=$(date +%Y-%m-%d)
+CURRENT_DAY=$(date +%d | sed 's/^0//')
+CURRENT_MONTH=$(date +%Y-%m)
+
+if [[ $CURRENT_DAY -ge $BILLING_DAY ]]; then
+    # We're past billing day this month
+    CYCLE_START="${CURRENT_MONTH}-${BILLING_DAY}"
+else
+    # Before billing day, so cycle started last month
+    CYCLE_START=$(date -v-1m +%Y-%m)-${BILLING_DAY}
+fi
+
+# API pricing (per million tokens)
+OPUS_INPUT=15.00
+OPUS_OUTPUT=75.00
+OPUS_CACHE_WRITE=18.75
+OPUS_CACHE_READ=1.50
+
+SONNET_INPUT=3.00
+SONNET_OUTPUT=15.00
+SONNET_CACHE_WRITE=3.75
+SONNET_CACHE_READ=0.30
+
+HAIKU_INPUT=0.25
+HAIKU_OUTPUT=1.25
+HAIKU_CACHE_WRITE=0.30
+HAIKU_CACHE_READ=0.03
+
+# Get dates from daily stats since cycle start
+DATES=$(jq -r ".dailyModelTokens[].date | select(. >= \"$CYCLE_START\")" "$STATS_FILE" 2>/dev/null || echo "")
+
+if [[ -z "$DATES" ]]; then
+    # No daily data, fall back to total modelUsage
+    # This gives all-time cost, not perfect but better than nothing
+    OPUS_IN=$(jq -r '.modelUsage."claude-opus-4-6".inputTokens // 0' "$STATS_FILE")
+    OPUS_OUT=$(jq -r '.modelUsage."claude-opus-4-6".outputTokens // 0' "$STATS_FILE")
+    OPUS_CACHE_W=$(jq -r '.modelUsage."claude-opus-4-6".cacheCreationInputTokens // 0' "$STATS_FILE")
+    OPUS_CACHE_R=$(jq -r '.modelUsage."claude-opus-4-6".cacheReadInputTokens // 0' "$STATS_FILE")
+
+    SONNET_IN=$(jq -r '.modelUsage."claude-sonnet-4-5-20250929".inputTokens // 0' "$STATS_FILE")
+    SONNET_OUT=$(jq -r '.modelUsage."claude-sonnet-4-5-20250929".outputTokens // 0' "$STATS_FILE")
+    SONNET_CACHE_W=$(jq -r '.modelUsage."claude-sonnet-4-5-20250929".cacheCreationInputTokens // 0' "$STATS_FILE")
+    SONNET_CACHE_R=$(jq -r '.modelUsage."claude-sonnet-4-5-20250929".cacheReadInputTokens // 0' "$STATS_FILE")
+
+    HAIKU_IN=$(jq -r '.modelUsage."claude-haiku-4-5-20251001".inputTokens // 0' "$STATS_FILE")
+    HAIKU_OUT=$(jq -r '.modelUsage."claude-haiku-4-5-20251001".outputTokens // 0' "$STATS_FILE")
+    HAIKU_CACHE_W=$(jq -r '.modelUsage."claude-haiku-4-5-20251001".cacheCreationInputTokens // 0' "$STATS_FILE")
+    HAIKU_CACHE_R=$(jq -r '.modelUsage."claude-haiku-4-5-20251001".cacheReadInputTokens // 0' "$STATS_FILE")
+else
+    # Sum up tokens from daily stats since cycle start
+    # Note: dailyModelTokens only has output tokens, we need the full modelUsage for accurate costs
+    # For now, use total modelUsage as approximation
+    # TODO: This needs session-level data to be truly accurate per billing cycle
+
+    OPUS_IN=$(jq -r '.modelUsage."claude-opus-4-6".inputTokens // 0' "$STATS_FILE")
+    OPUS_OUT=$(jq -r '.modelUsage."claude-opus-4-6".outputTokens // 0' "$STATS_FILE")
+    OPUS_CACHE_W=$(jq -r '.modelUsage."claude-opus-4-6".cacheCreationInputTokens // 0' "$STATS_FILE")
+    OPUS_CACHE_R=$(jq -r '.modelUsage."claude-opus-4-6".cacheReadInputTokens // 0' "$STATS_FILE")
+
+    SONNET_IN=$(jq -r '.modelUsage."claude-sonnet-4-5-20250929".inputTokens // 0' "$STATS_FILE")
+    SONNET_OUT=$(jq -r '.modelUsage."claude-sonnet-4-5-20250929".outputTokens // 0' "$STATS_FILE")
+    SONNET_CACHE_W=$(jq -r '.modelUsage."claude-sonnet-4-5-20250929".cacheCreationInputTokens // 0' "$STATS_FILE")
+    SONNET_CACHE_R=$(jq -r '.modelUsage."claude-sonnet-4-5-20250929".cacheReadInputTokens // 0' "$STATS_FILE")
+
+    HAIKU_IN=$(jq -r '.modelUsage."claude-haiku-4-5-20251001".inputTokens // 0' "$STATS_FILE")
+    HAIKU_OUT=$(jq -r '.modelUsage."claude-haiku-4-5-20251001".outputTokens // 0' "$STATS_FILE")
+    HAIKU_CACHE_W=$(jq -r '.modelUsage."claude-haiku-4-5-20251001".cacheCreationInputTokens // 0' "$STATS_FILE")
+    HAIKU_CACHE_R=$(jq -r '.modelUsage."claude-haiku-4-5-20251001".cacheReadInputTokens // 0' "$STATS_FILE")
+fi
+
+# Calculate costs
+read OPUS_COST SONNET_COST HAIKU_COST TOTAL_COST <<< $(awk "BEGIN {
+    opus = ($OPUS_IN / 1000000 * $OPUS_INPUT) + \
+           ($OPUS_OUT / 1000000 * $OPUS_OUTPUT) + \
+           ($OPUS_CACHE_W / 1000000 * $OPUS_CACHE_WRITE) + \
+           ($OPUS_CACHE_R / 1000000 * $OPUS_CACHE_READ);
+
+    sonnet = ($SONNET_IN / 1000000 * $SONNET_INPUT) + \
+             ($SONNET_OUT / 1000000 * $SONNET_OUTPUT) + \
+             ($SONNET_CACHE_W / 1000000 * $SONNET_CACHE_WRITE) + \
+             ($SONNET_CACHE_R / 1000000 * $SONNET_CACHE_READ);
+
+    haiku = ($HAIKU_IN / 1000000 * $HAIKU_INPUT) + \
+            ($HAIKU_OUT / 1000000 * $HAIKU_OUTPUT) + \
+            ($HAIKU_CACHE_W / 1000000 * $HAIKU_CACHE_WRITE) + \
+            ($HAIKU_CACHE_R / 1000000 * $HAIKU_CACHE_READ);
+
+    printf \"%.0f %.0f %.0f %.0f\", opus, sonnet, haiku, (opus + sonnet + haiku)
+}")
+
+# ANSI color codes for colored output
+if [[ "$USE_COLOR" == "true" ]]; then
+    GREEN=$'\033[32m'
+    YELLOW=$'\033[33m'
+    RED=$'\033[31m'
+    DIM=$'\033[2m'
+    RESET=$'\033[0m'
+    COLON="${DIM}:${RESET}"
+    EQUALS="${DIM}≈${RESET}"
+    PLUS="${DIM}+${RESET}"
+
+    # API costs are always green (they show value, not charges)
+    color_cost() {
+        local cost=$1
+        echo "${GREEN}\$${cost}${RESET}"
+    }
+else
+    COLON=":"
+    EQUALS="≈"
+    PLUS="+"
+    color_cost() {
+        echo "\$$1"
+    }
+fi
+
+# Output format: $TOTAL ≈ S:$X + O:$Y (equation style, consistent with percentages)
+# Only show models with non-zero cost
+MODELS_OUTPUT=""
+FIRST_MODEL=true
+
+if [[ "$HAIKU_COST" != "0" ]]; then
+    if [[ "$FIRST_MODEL" == "true" ]]; then
+        MODELS_OUTPUT="H${COLON}$(color_cost $HAIKU_COST)"
+        FIRST_MODEL=false
+    else
+        MODELS_OUTPUT="$MODELS_OUTPUT ${PLUS} H${COLON}$(color_cost $HAIKU_COST)"
+    fi
+fi
+
+if [[ "$SONNET_COST" != "0" ]]; then
+    if [[ "$FIRST_MODEL" == "true" ]]; then
+        MODELS_OUTPUT="S${COLON}$(color_cost $SONNET_COST)"
+        FIRST_MODEL=false
+    else
+        MODELS_OUTPUT="$MODELS_OUTPUT ${PLUS} S${COLON}$(color_cost $SONNET_COST)"
+    fi
+fi
+
+if [[ "$OPUS_COST" != "0" ]]; then
+    if [[ "$FIRST_MODEL" == "true" ]]; then
+        MODELS_OUTPUT="O${COLON}$(color_cost $OPUS_COST)"
+        FIRST_MODEL=false
+    else
+        MODELS_OUTPUT="$MODELS_OUTPUT ${PLUS} O${COLON}$(color_cost $OPUS_COST)"
+    fi
+fi
+
+# Format as: $TOTAL ≈ components
+if [[ -n "$MODELS_OUTPUT" ]]; then
+    echo "$(color_cost $TOTAL_COST) ${EQUALS} ${MODELS_OUTPUT}"
+else
+    echo "$(color_cost $TOTAL_COST)"
+fi

@@ -1,0 +1,383 @@
+#!/usr/bin/env bash
+
+# claude-statusline: Shows Claude Code usage in the statusline
+# This script receives JSON from Claude Code as first argument ($1)
+# Caches API responses to avoid hammering the endpoint on every update
+
+set -euo pipefail
+
+# Read JSON from first argument or stdin (Claude Code sends session info including context window)
+# Try both sources to see which one works
+if [[ -n "${1:-}" ]] && [[ "$1" != "{}" ]]; then
+    INPUT="$1"
+else
+    # Try stdin with timeout
+    INPUT=$(timeout 0.1 cat 2>/dev/null || echo "{}")
+fi
+
+CACHE_FILE="/tmp/claude-usage-cache"
+CACHE_MAX_AGE=30 # seconds - usage data doesn't change that fast
+
+# Check if cache is fresh enough
+cache_is_fresh() {
+    if [[ ! -f "$CACHE_FILE" ]]; then
+        return 1
+    fi
+
+    local now=$(date +%s)
+    # BSD stat (macOS) uses -f %m, GNU stat (Linux) uses -c %Y
+    local mtime
+    if stat -f %m "$CACHE_FILE" >/dev/null 2>&1; then
+        # macOS
+        mtime=$(stat -f %m "$CACHE_FILE")
+    else
+        # Linux
+        mtime=$(stat -c %Y "$CACHE_FILE")
+    fi
+    local age=$((now - mtime))
+
+    [[ $age -lt $CACHE_MAX_AGE ]]
+}
+
+# Portable credential chain - try all sources in priority order
+get_oauth_token() {
+    local token=""
+
+    # 1. Environment variable (explicit override)
+    if [[ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]]; then
+        token="$CLAUDE_CODE_OAUTH_TOKEN"
+        echo "$token"
+        return 0
+    fi
+
+    # 2. Credentials file (Linux/devcontainers)
+    if [[ -f "$HOME/.claude/.credentials.json" ]]; then
+        token=$(jq -r '.claudeAiOauth.accessToken // empty' "$HOME/.claude/.credentials.json" 2>/dev/null || echo "")
+        if [[ -n "$token" ]]; then
+            echo "$token"
+            return 0
+        fi
+    fi
+
+    # 3. macOS Keychain (fallback)
+    if command -v security >/dev/null 2>&1; then
+        token=$(security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null \
+            | jq -r '.claudeAiOauth.accessToken // empty' 2>/dev/null || echo "")
+        if [[ -n "$token" ]]; then
+            echo "$token"
+            return 0
+        fi
+    fi
+
+    # No token found
+    return 1
+}
+
+# Try to get usage data from API (skip if no token)
+USAGE="{}"
+if cache_is_fresh; then
+    USAGE=$(cat "$CACHE_FILE")
+else
+    # Try to get OAuth token
+    TOKEN=$(get_oauth_token || echo "")
+
+    if [[ -n "$TOKEN" ]]; then
+        # Query usage API
+        USAGE=$(curl -s --connect-timeout 3 --max-time 5 \
+            "https://api.anthropic.com/api/oauth/usage" \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "anthropic-beta: oauth-2025-04-20" \
+            -H "Content-Type: application/json" 2>/dev/null || echo "{}")
+
+        # Only cache valid responses
+        if echo "$USAGE" | jq -e '.five_hour' >/dev/null 2>&1; then
+            echo "$USAGE" > "$CACHE_FILE"
+        elif [[ -f "$CACHE_FILE" ]]; then
+            # Fall back to stale cache on API error
+            USAGE=$(cat "$CACHE_FILE")
+        fi
+    fi
+    # If no token, USAGE remains "{}" and we skip quota display
+fi
+
+# Parse usage data
+FIVE_HOUR=$(echo "$USAGE" | jq -r '.five_hour.utilization // "?" | floor' 2>/dev/null)
+FIVE_RESET=$(echo "$USAGE" | jq -r '.five_hour.resets_at // ""' 2>/dev/null)
+SEVEN_DAY=$(echo "$USAGE" | jq -r '.seven_day.utilization // "?" | floor' 2>/dev/null)
+SEVEN_RESET=$(echo "$USAGE" | jq -r '.seven_day.resets_at // ""' 2>/dev/null)
+SONNET=$(echo "$USAGE" | jq -r '.seven_day_sonnet.utilization // null | if . != null then floor else null end' 2>/dev/null)
+OPUS=$(echo "$USAGE" | jq -r '.seven_day_opus.utilization // null | if . != null then floor else null end' 2>/dev/null)
+EXTRA_ENABLED=$(echo "$USAGE" | jq -r '.extra_usage.is_enabled // false' 2>/dev/null)
+EXTRA_USED=$(echo "$USAGE" | jq -r '.extra_usage.used_credits // 0 | floor / 100' 2>/dev/null)
+EXTRA_LIMIT=$(echo "$USAGE" | jq -r '.extra_usage.monthly_limit // 0 | floor / 100' 2>/dev/null)
+
+# Calculate per-model contribution to 7-day total based on token usage
+STATS_FILE="$HOME/.claude/stats-cache.json"
+if [[ -f "$STATS_FILE" ]] && [[ "$SEVEN_DAY" != "?" ]] && [[ "$SONNET" != "null" ]]; then
+    # Get output tokens for each model (using output tokens as proxy for usage)
+    HAIKU_TOKENS=$(jq -r '.modelUsage."claude-haiku-4-5-20251001".outputTokens // 0' "$STATS_FILE" 2>/dev/null || echo 0)
+    SONNET_TOKENS=$(jq -r '.modelUsage."claude-sonnet-4-5-20250929".outputTokens // 0' "$STATS_FILE" 2>/dev/null || echo 0)
+    OPUS_TOKENS=$(jq -r '.modelUsage."claude-opus-4-6".outputTokens // 0' "$STATS_FILE" 2>/dev/null || echo 0)
+
+    TOTAL_TOKENS=$((HAIKU_TOKENS + SONNET_TOKENS + OPUS_TOKENS))
+
+    if [[ $TOTAL_TOKENS -gt 0 ]]; then
+        # Calculate each model's contribution to the 7-day total
+        # We know Sonnet's percentage from the API, so we can derive the others
+        HAIKU_CONTRIB=$(awk "BEGIN {printf \"%.0f\", ($HAIKU_TOKENS / $TOTAL_TOKENS) * $SEVEN_DAY}")
+        OPUS_CONTRIB=$(awk "BEGIN {printf \"%.0f\", ($OPUS_TOKENS / $TOTAL_TOKENS) * $SEVEN_DAY}")
+
+        # Override API values with calculated contributions
+        if [[ "$OPUS" == "null" ]]; then
+            OPUS=$OPUS_CONTRIB
+        fi
+        # Add Haiku even though it doesn't have an API value
+        HAIKU=$HAIKU_CONTRIB
+    fi
+fi
+
+# Format compact time until reset (with color)
+time_until() {
+    local reset_time=$1
+    if [[ -z "$reset_time" ]] || [[ "$reset_time" == "null" ]]; then
+        echo ""
+        return
+    fi
+
+    local now=$(date -u +%s)
+    # Try GNU date first (Homebrew bash), fallback to BSD date (macOS default)
+    local reset=$(date -u -d "$reset_time" +%s 2>/dev/null || date -j -u -f "%Y-%m-%dT%H:%M:%S" "$(echo $reset_time | cut -d. -f1)" +%s 2>/dev/null || echo "$now")
+    local diff=$((reset - now))
+
+    local time_str
+    if [[ $diff -le 0 ]]; then
+        time_str="now"
+    elif [[ $diff -lt 60 ]]; then
+        time_str="${diff}s"
+    elif [[ $diff -lt 3600 ]]; then
+        time_str="$((diff / 60))m"
+    elif [[ $diff -lt 86400 ]]; then
+        local h=$((diff / 3600))
+        local m=$((diff % 3600 / 60))
+        if [[ $m -eq 0 ]]; then
+            time_str="${h}h"
+        else
+            time_str="${h}h${m}m"
+        fi
+    else
+        local d=$((diff / 86400))
+        local h=$((diff % 86400 / 3600))
+        if [[ $h -eq 0 ]]; then
+            time_str="${d}d"
+        else
+            time_str="${d}d${h}h"
+        fi
+    fi
+
+    echo "${CYAN}${time_str}${RESET}"
+}
+
+# ANSI color codes
+GREEN=$'\033[32m'
+YELLOW=$'\033[33m'
+RED=$'\033[31m'
+CYAN=$'\033[36m'              # For time periods
+BRIGHT_BLUE=$'\033[38;5;33m'  # For synthetic percentages (neutral/informational)
+BRIGHT_CYAN=$'\033[38;5;51m'  # For context percentage
+LIGHT_PURPLE=$'\033[38;5;141m' # For session cost (interesting metric)
+DIM=$'\033[2m'                # For separators
+RESET=$'\033[0m'
+
+# Color a dollar amount based on overage limit
+# Use same thresholds as percentages: 70% and 90% of limit
+color_cost() {
+    local cost=$1
+    local limit=${2:-50}  # Default to $50 if not provided
+    local yellow_threshold=$(awk "BEGIN {printf \"%.0f\", $limit * 0.7}")
+    local red_threshold=$(awk "BEGIN {printf \"%.0f\", $limit * 0.9}")
+
+    if (( $(awk "BEGIN {print ($cost >= $red_threshold)}") )); then
+        echo "${RED}\$${cost}${RESET}"
+    elif (( $(awk "BEGIN {print ($cost >= $yellow_threshold)}") )); then
+        echo "${YELLOW}\$${cost}${RESET}"
+    else
+        echo "${GREEN}\$${cost}${RESET}"
+    fi
+}
+
+# Color coding based on utilization
+color_usage() {
+    local val=$1
+    if [[ "$val" == "?" ]] || [[ "$val" == "null" ]]; then
+        echo "?"
+    elif (( $(awk "BEGIN {print ($val >= 90)}") )); then
+        echo "${RED}${val}%${RESET}"
+    elif (( $(awk "BEGIN {print ($val >= 70)}") )); then
+        echo "${YELLOW}${val}%${RESET}"
+    else
+        echo "${GREEN}${val}%${RESET}"
+    fi
+}
+
+# Color coding for synthetic/calculated percentages (always bright blue, no heatmap)
+# These are contributions to the total, not separate quotas
+color_usage_synthetic() {
+    local val=$1
+    if [[ "$val" == "?" ]] || [[ "$val" == "null" ]]; then
+        echo "?"
+    else
+        echo "${BRIGHT_BLUE}${val}%${RESET}"
+    fi
+}
+
+# Calculate time strings
+FIVE_TIME=$(time_until "$FIVE_RESET")
+SEVEN_TIME=$(time_until "$SEVEN_RESET")
+
+# Dim separators and operators
+SEP="${DIM}|${RESET}"
+COLON="${DIM}:${RESET}"
+EQUALS="${DIM}=${RESET}"
+PLUS="${DIM}+${RESET}"
+
+# Build output - start with usage if available
+OUTPUT=""
+
+# Only show quota if we have data
+if [[ "$FIVE_HOUR" != "?" ]] || [[ "$SEVEN_DAY" != "?" ]]; then
+    # Format output with times
+    OUTPUT="5h${COLON}$(color_usage $FIVE_HOUR)"
+    if [[ -n "$FIVE_TIME" ]]; then
+        OUTPUT="${OUTPUT}~${FIVE_TIME}"
+    fi
+
+    OUTPUT="${OUTPUT} ${SEP} 7d${COLON}$(color_usage $SEVEN_DAY)"
+    if [[ -n "$SEVEN_TIME" ]]; then
+        OUTPUT="${OUTPUT}~${SEVEN_TIME}"
+    fi
+
+    # Add per-model contribution to 7-day total as equation: 7d:15% = S:10% + O:5%
+    # Order: H, S, O
+    MODELS_OUTPUT=""
+    FIRST_MODEL=true
+
+    if [[ "${HAIKU:-null}" != "null" ]] && [[ "${HAIKU:-0}" != "0" ]]; then
+        if [[ "$FIRST_MODEL" == "true" ]]; then
+            MODELS_OUTPUT="H${COLON}$(color_usage_synthetic $HAIKU)"
+            FIRST_MODEL=false
+        else
+            MODELS_OUTPUT="$MODELS_OUTPUT ${PLUS} H${COLON}$(color_usage_synthetic $HAIKU)"
+        fi
+    fi
+
+    if [[ "$SONNET" != "null" ]] && [[ "$SONNET" != "?" ]]; then
+        if [[ "$FIRST_MODEL" == "true" ]]; then
+            MODELS_OUTPUT="S${COLON}$(color_usage $SONNET)"
+            FIRST_MODEL=false
+        else
+            MODELS_OUTPUT="$MODELS_OUTPUT ${PLUS} S${COLON}$(color_usage $SONNET)"
+        fi
+    fi
+
+    if [[ "$OPUS" != "null" ]] && [[ "$OPUS" != "?" ]] && [[ "$OPUS" != "0" ]]; then
+        if [[ "$FIRST_MODEL" == "true" ]]; then
+            MODELS_OUTPUT="O${COLON}$(color_usage_synthetic $OPUS)"
+            FIRST_MODEL=false
+        else
+            MODELS_OUTPUT="$MODELS_OUTPUT ${PLUS} O${COLON}$(color_usage_synthetic $OPUS)"
+        fi
+    fi
+
+    # Add the equation to output if we have any models
+    if [[ -n "$MODELS_OUTPUT" ]]; then
+        OUTPUT="$OUTPUT ${EQUALS} ${MODELS_OUTPUT}"
+    fi
+
+    # Add overage if enabled (Billing: used/limit)
+    if [[ "$EXTRA_ENABLED" == "true" ]]; then
+        OUTPUT="$OUTPUT ${SEP} B${COLON}$(color_cost $EXTRA_USED $EXTRA_LIMIT)/${GREEN}\$${EXTRA_LIMIT}${RESET}"
+    fi
+fi
+
+# Extract session metadata for cross-machine tracking
+SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // ""' 2>/dev/null || echo "")
+SESSION_COST=$(echo "$INPUT" | jq -r '.cost.total_cost_usd // 0' 2>/dev/null || echo "0")
+SESSION_COST_FORMATTED=$(printf "%.2f" "$SESSION_COST")
+
+# WAL write: Capture session cost locally (instant, no network)
+if [[ -n "$SESSION_ID" ]] && command -v claude-session-sync >/dev/null 2>&1; then
+    # Check if this is a new session (WAL file didn't exist before)
+    WAL_FILE="/tmp/claude-session-wal/$SESSION_ID"
+    IS_NEW_SESSION=false
+    if [[ ! -f "$WAL_FILE" ]]; then
+        IS_NEW_SESSION=true
+    fi
+
+    # Write to WAL (every invocation, instant)
+    claude-session-sync wal-write "$SESSION_ID" "$SESSION_COST" 2>/dev/null || true
+
+    # Sync check (backgrounded, throttled to every 10s)
+    (
+        if [[ "$IS_NEW_SESSION" == "true" ]]; then
+            # New session: sync previous session's final WAL + prune old sessions
+            claude-session-sync sync 2>/dev/null || true
+            claude-session-sync prune 2>/dev/null || true
+        else
+            # Existing session: just sync if it's been 10s
+            claude-session-sync sync 2>/dev/null || true
+        fi
+    ) &
+fi
+
+# Get monthly total from Firebase
+MONTHLY_TOTAL=""
+if [[ -n "${CLAUDE_FIREBASE_URL:-}" ]] && command -v claude-session-sync >/dev/null 2>&1; then
+    # Try Firebase first
+    MONTHLY_TOTAL=$(claude-session-sync read --color 2>/dev/null || echo "")
+fi
+
+# Fallback chain: Firebase -> stale cache -> "?"
+if [[ -z "$MONTHLY_TOTAL" ]]; then
+    # Try stale Firebase cache
+    if [[ -f "/tmp/claude-session-sync-read" ]]; then
+        MONTHLY_TOTAL=$(cat "/tmp/claude-session-sync-read" 2>/dev/null || echo "")
+    fi
+fi
+
+if [[ -z "$MONTHLY_TOTAL" ]]; then
+    # No Firebase data available
+    MONTHLY_TOTAL="${LIGHT_PURPLE}?${RESET}"
+fi
+
+# Display: V:$34.58/$160 (Value: session/monthly)
+if [[ -n "$OUTPUT" ]]; then
+    OUTPUT="$OUTPUT ${SEP} V${COLON}${LIGHT_PURPLE}\$${SESSION_COST_FORMATTED}${RESET}/${MONTHLY_TOTAL}"
+else
+    OUTPUT="V${COLON}${LIGHT_PURPLE}\$${SESSION_COST_FORMATTED}${RESET}/${MONTHLY_TOTAL}"
+fi
+
+# Add context window percentage (from Claude Code session data)
+CONTEXT_PCT=$(echo "$INPUT" | jq -r '.context_window.used_percentage // 0 | round' 2>/dev/null || echo "0")
+OUTPUT="$OUTPUT ${SEP} C${COLON}${BRIGHT_CYAN}${CONTEXT_PCT}%${RESET}"
+
+# Add model information
+# Model in INPUT is an object with {id, display_name}
+MODEL_NAME=$(echo "$INPUT" | jq -r '.model.display_name // .model.id // .model // ""' 2>/dev/null)
+MODEL_PLAN=$(jq -r '.model // ""' ~/.claude/settings.json 2>/dev/null)
+
+# Build model display - always show setting/actual to detect drift
+MODEL_DISPLAY=""
+if [[ -n "$MODEL_NAME" ]] && [[ -n "$MODEL_PLAN" ]] && [[ "$MODEL_PLAN" != "null" ]]; then
+    # Always show both to detect drift
+    MODEL_DISPLAY="${MODEL_PLAN}/${MODEL_NAME}"
+elif [[ -n "$MODEL_NAME" ]]; then
+    MODEL_DISPLAY="${MODEL_NAME}"
+elif [[ -n "$MODEL_PLAN" ]]; then
+    MODEL_DISPLAY="${MODEL_PLAN}"
+fi
+
+if [[ -n "$MODEL_DISPLAY" ]]; then
+    OUTPUT="$OUTPUT ${SEP} ${MODEL_DISPLAY}"
+fi
+
+echo "$OUTPUT"

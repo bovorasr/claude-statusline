@@ -1,0 +1,286 @@
+#!/usr/bin/env bash
+
+# claude-session-sync: Centralized cross-machine session cost tracking via Firebase RTDB
+# Architecture: Local WAL (write-ahead log) + periodic sync to Firebase
+# - Every statusline invocation: write to local WAL (instant, no network)
+# - Every 10s: background sync all WAL files to Firebase
+# - On session start: flush previous session's WAL + prune old sessions
+
+set -euo pipefail
+
+WAL_DIR="/tmp/claude-session-wal"
+SYNC_TS_FILE="/tmp/claude-session-sync-ts"
+READ_CACHE_FILE="/tmp/claude-session-sync-read"
+SYNC_INTERVAL=10  # seconds
+READ_CACHE_TTL=60  # seconds
+
+# Ensure WAL directory exists
+mkdir -p "$WAL_DIR"
+
+usage() {
+    cat <<EOF
+Usage: claude-session-sync <command> [args]
+
+Commands:
+  wal-write <session_id> <cost>
+      Write session data to local WAL file (instant, no network call)
+
+  sync
+      Sync all WAL files to Firebase RTDB (backgrounded, throttled to every 10s)
+
+  read [--color]
+      Read total monthly session costs from Firebase
+      Output format: \$160
+      Cached for 60s to stay under bandwidth limits
+
+  prune [--days N]
+      Delete sessions older than N days from Firebase (default: 90)
+      Called automatically on session start, runs in background
+
+Environment variables required:
+  CLAUDE_FIREBASE_URL     - Firebase RTDB URL (e.g., https://your-db.firebaseio.com)
+  CLAUDE_FIREBASE_SECRET  - Firebase auth secret
+
+Examples:
+  claude-session-sync wal-write abc123 27.59
+  claude-session-sync sync
+  claude-session-sync read --color
+  claude-session-sync prune --days 90
+EOF
+    exit 1
+}
+
+# Check Firebase credentials
+check_credentials() {
+    if [[ -z "${CLAUDE_FIREBASE_URL:-}" ]] || [[ -z "${CLAUDE_FIREBASE_SECRET:-}" ]]; then
+        echo "Error: CLAUDE_FIREBASE_URL and CLAUDE_FIREBASE_SECRET must be set" >&2
+        exit 1
+    fi
+}
+
+# wal-write: Write session data to local WAL file
+cmd_wal_write() {
+    local session_id=$1
+    local cost=$2
+
+    local wal_file="$WAL_DIR/$session_id"
+    local machine=$(hostname -s)
+    local ts=$(date +%s)
+
+    # Write JSON to WAL file
+    cat > "$wal_file" <<EOF
+{
+  "cost": $cost,
+  "ts": $ts,
+  "machine": "$machine"
+}
+EOF
+}
+
+# sync: Sync all WAL files to Firebase
+cmd_sync() {
+    check_credentials
+
+    # Throttle: only sync if last sync was more than SYNC_INTERVAL seconds ago
+    if [[ -f "$SYNC_TS_FILE" ]]; then
+        local now=$(date +%s)
+        local last_sync
+        # BSD stat (macOS) uses -f %m, GNU stat (Linux) uses -c %Y
+        if stat -f %m "$SYNC_TS_FILE" >/dev/null 2>&1; then
+            last_sync=$(stat -f %m "$SYNC_TS_FILE")
+        else
+            last_sync=$(stat -c %Y "$SYNC_TS_FILE")
+        fi
+        local age=$((now - last_sync))
+
+        if [[ $age -lt $SYNC_INTERVAL ]]; then
+            # Too soon, skip sync
+            return 0
+        fi
+    fi
+
+    # Sync all WAL files to Firebase
+    for wal_file in "$WAL_DIR"/*; do
+        if [[ ! -f "$wal_file" ]]; then
+            continue
+        fi
+
+        local session_id=$(basename "$wal_file")
+        local data=$(cat "$wal_file")
+
+        # PUT to Firebase (native upsert, no read-before-write)
+        curl -s -X PUT \
+            --connect-timeout 2 \
+            --max-time 3 \
+            -H "Content-Type: application/json" \
+            -d "$data" \
+            "${CLAUDE_FIREBASE_URL}/sessions/${session_id}.json?auth=${CLAUDE_FIREBASE_SECRET}" \
+            >/dev/null 2>&1 || true  # Ignore errors (offline, etc.)
+    done
+
+    # Update sync timestamp
+    touch "$SYNC_TS_FILE"
+}
+
+# read: Read monthly session costs from Firebase
+cmd_read() {
+    local use_color=false
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --color)
+                use_color=true
+                shift
+                ;;
+            *)
+                shift
+                ;;
+        esac
+    done
+
+    # Check cache freshness
+    if [[ -f "$READ_CACHE_FILE" ]]; then
+        local now=$(date +%s)
+        local cache_mtime
+        if stat -f %m "$READ_CACHE_FILE" >/dev/null 2>&1; then
+            cache_mtime=$(stat -f %m "$READ_CACHE_FILE")
+        else
+            cache_mtime=$(stat -c %Y "$READ_CACHE_FILE")
+        fi
+        local cache_age=$((now - cache_mtime))
+
+        if [[ $cache_age -lt $READ_CACHE_TTL ]]; then
+            # Cache is fresh, use it
+            cat "$READ_CACHE_FILE"
+            return 0
+        fi
+    fi
+
+    check_credentials
+
+    # Fetch all sessions from Firebase
+    local sessions=$(curl -s -X GET \
+        --connect-timeout 2 \
+        --max-time 5 \
+        "${CLAUDE_FIREBASE_URL}/sessions.json?auth=${CLAUDE_FIREBASE_SECRET}" 2>/dev/null || echo "{}")
+
+    # Get billing day from ~/.claude.json (same logic as claude-billing-cost)
+    local billing_day=$(jq -r '.oauthAccount.subscriptionCreatedAt // ""' ~/.claude.json 2>/dev/null | cut -d- -f3 | cut -dT -f1 || echo "12")
+
+    # Calculate billing cycle start
+    local current_day=$(date +%d | sed 's/^0//')
+    local current_month=$(date +%Y-%m)
+
+    local cycle_start
+    if [[ $current_day -ge $billing_day ]]; then
+        cycle_start="${current_month}-${billing_day}"
+    else
+        cycle_start=$(date -v-1m +%Y-%m)-${billing_day}
+    fi
+
+    local cycle_start_ts=$(date -j -f "%Y-%m-%d" "$cycle_start" +%s 2>/dev/null || echo "0")
+
+    # Calculate total cost from all sessions in billing cycle
+    local total_cost=$(echo "$sessions" | jq --arg cycle_ts "$cycle_start_ts" '
+        to_entries |
+        map(select(.value.ts >= ($cycle_ts | tonumber))) |
+        map(.value.cost) |
+        add // 0
+    ' 2>/dev/null || echo "0")
+
+    # Round to nearest dollar
+    total_cost=$(printf "%.0f" "$total_cost" 2>/dev/null || echo "0")
+
+    # Format output (just the total)
+    local output=""
+
+    if [[ "$use_color" == "true" ]]; then
+        local LIGHT_PURPLE=$'\033[38;5;141m'
+        local RESET=$'\033[0m'
+        output="${LIGHT_PURPLE}\$${total_cost}${RESET}"
+    else
+        output="\$${total_cost}"
+    fi
+
+    # Cache the result
+    echo "$output" > "$READ_CACHE_FILE"
+    echo "$output"
+}
+
+# prune: Delete old sessions from Firebase
+cmd_prune() {
+    local days=90
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --days)
+                days=$2
+                shift 2
+                ;;
+            *)
+                shift
+                ;;
+        esac
+    done
+
+    check_credentials
+
+    # Calculate cutoff timestamp
+    local cutoff_ts=$(date -v-${days}d +%s 2>/dev/null || date -d "${days} days ago" +%s 2>/dev/null || echo "0")
+
+    # Fetch all sessions from Firebase
+    local sessions=$(curl -s -X GET \
+        --connect-timeout 2 \
+        --max-time 5 \
+        "${CLAUDE_FIREBASE_URL}/sessions.json?auth=${CLAUDE_FIREBASE_SECRET}" 2>/dev/null || echo "{}")
+
+    # Find and delete old sessions
+    local old_sessions=$(echo "$sessions" | jq -r --arg cutoff "$cutoff_ts" '
+        to_entries |
+        map(select(.value.ts < ($cutoff | tonumber))) |
+        .[].key
+    ' 2>/dev/null || echo "")
+
+    if [[ -n "$old_sessions" ]]; then
+        while IFS= read -r session_id; do
+            if [[ -n "$session_id" ]]; then
+                curl -s -X DELETE \
+                    --connect-timeout 2 \
+                    --max-time 3 \
+                    "${CLAUDE_FIREBASE_URL}/sessions/${session_id}.json?auth=${CLAUDE_FIREBASE_SECRET}" \
+                    >/dev/null 2>&1 || true
+            fi
+        done <<< "$old_sessions"
+    fi
+}
+
+# Main command dispatcher
+if [[ $# -lt 1 ]]; then
+    usage
+fi
+
+COMMAND=$1
+shift
+
+case "$COMMAND" in
+    wal-write)
+        if [[ $# -ne 2 ]]; then
+            echo "Error: wal-write requires 2 arguments: <session_id> <cost>" >&2
+            exit 1
+        fi
+        cmd_wal_write "$1" "$2"
+        ;;
+    sync)
+        cmd_sync
+        ;;
+    read)
+        cmd_read "$@"
+        ;;
+    prune)
+        cmd_prune "$@"
+        ;;
+    *)
+        echo "Error: Unknown command: $COMMAND" >&2
+        usage
+        ;;
+esac
