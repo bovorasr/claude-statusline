@@ -354,7 +354,8 @@ if [[ "$FIVE_HOUR" != "?" ]] || [[ "$SEVEN_DAY" != "?" ]]; then
     MODELS_OUTPUT=""
     FIRST_MODEL=true
 
-    if [[ "${HAIKU:-null}" != "null" ]] && [[ "${HAIKU:-0}" != "0" ]]; then
+    # Check if HAIKU is non-zero (handles both integer 0 and decimal 0.00)
+    if [[ "${HAIKU:-null}" != "null" ]] && (( $(awk "BEGIN {print ($HAIKU > 0)}") )); then
         if [[ "$FIRST_MODEL" == "true" ]]; then
             MODELS_OUTPUT="H${COLON}$(color_usage_synthetic $HAIKU)"
             if [[ $HAIKU_TOKENS -gt 0 ]]; then
@@ -384,7 +385,8 @@ if [[ "$FIVE_HOUR" != "?" ]] || [[ "$SEVEN_DAY" != "?" ]]; then
         fi
     fi
 
-    if [[ "$OPUS" != "null" ]] && [[ "$OPUS" != "?" ]] && [[ "$OPUS" != "0" ]]; then
+    # Check if OPUS is non-zero (handles both integer 0 and decimal 0.00)
+    if [[ "$OPUS" != "null" ]] && [[ "$OPUS" != "?" ]] && (( $(awk "BEGIN {print ($OPUS > 0)}") )); then
         if [[ "$FIRST_MODEL" == "true" ]]; then
             MODELS_OUTPUT="O${COLON}$(color_usage_synthetic $OPUS)"
             if [[ $OPUS_TOKENS -gt 0 ]]; then
