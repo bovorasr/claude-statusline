@@ -14,6 +14,10 @@ READ_CACHE_FILE="/tmp/claude-session-sync-read"
 SYNC_INTERVAL=10  # seconds
 READ_CACHE_TTL=60  # seconds
 
+TOKEN_SYNC_TS_FILE="/tmp/claude-token-sync-ts"
+TOKEN_READ_CACHE_FILE="/tmp/claude-token-read-cache"
+TOKEN_READ_CACHE_TTL=60  # seconds
+
 # Ensure WAL directory exists
 mkdir -p "$WAL_DIR"
 
@@ -37,6 +41,18 @@ Commands:
       Delete sessions older than N days from Firebase (default: 90)
       Called automatically on session start, runs in background
 
+  token-sync
+      Sync daily model token stats to Firebase (throttled by stats-cache.json mtime)
+      Reads dailyModelTokens from ~/.claude/stats-cache.json for last 8 days
+
+  token-read [--days N]
+      Read aggregated model token stats from Firebase (default: 7 days)
+      Output format: JSON with model IDs as keys
+      Cached for 60s to stay under bandwidth limits
+
+  token-prune [--days N]
+      Delete daily token stats older than N days from Firebase (default: 14)
+
 Environment variables required:
   CLAUDE_FIREBASE_URL     - Firebase RTDB URL (e.g., https://your-db.firebaseio.com)
   CLAUDE_FIREBASE_SECRET  - Firebase auth secret
@@ -46,6 +62,9 @@ Examples:
   claude-session-sync sync
   claude-session-sync read --color
   claude-session-sync prune --days 90
+  claude-session-sync token-sync
+  claude-session-sync token-read --days 7
+  claude-session-sync token-prune --days 14
 EOF
     exit 1
 }
@@ -254,6 +273,215 @@ cmd_prune() {
     fi
 }
 
+# token-sync: Sync daily model token stats to Firebase
+cmd_token_sync() {
+    check_credentials
+
+    local stats_file="$HOME/.claude/stats-cache.json"
+    if [[ ! -f "$stats_file" ]]; then
+        # No stats file, nothing to sync
+        return 0
+    fi
+
+    # Check if stats-cache.json has changed since last sync
+    local stats_mtime
+    if stat -f %m "$stats_file" >/dev/null 2>&1; then
+        stats_mtime=$(stat -f %m "$stats_file")
+    else
+        stats_mtime=$(stat -c %Y "$stats_file")
+    fi
+
+    if [[ -f "$TOKEN_SYNC_TS_FILE" ]]; then
+        local last_sync_mtime
+        if stat -f %m "$TOKEN_SYNC_TS_FILE" >/dev/null 2>&1; then
+            last_sync_mtime=$(stat -f %m "$TOKEN_SYNC_TS_FILE")
+        else
+            last_sync_mtime=$(stat -c %Y "$TOKEN_SYNC_TS_FILE")
+        fi
+
+        if [[ $stats_mtime -le $last_sync_mtime ]]; then
+            # Stats haven't changed since last sync
+            return 0
+        fi
+    fi
+
+    # Get machine name for namespacing
+    local machine=$(hostname -s)
+
+    # Calculate cutoff date (8 days ago to cover 7-day window + timezone buffer)
+    local cutoff_date
+    if date -v-8d +%Y-%m-%d >/dev/null 2>&1; then
+        cutoff_date=$(date -v-8d +%Y-%m-%d)
+    else
+        cutoff_date=$(date -d "8 days ago" +%Y-%m-%d)
+    fi
+
+    local cutoff_ts
+    if date -j -f "%Y-%m-%d" "$cutoff_date" +%s >/dev/null 2>&1; then
+        cutoff_ts=$(date -j -f "%Y-%m-%d" "$cutoff_date" +%s)
+    else
+        cutoff_ts=$(date -d "$cutoff_date" +%s)
+    fi
+
+    # Extract dailyModelTokens from stats-cache.json
+    local daily_entries=$(jq -r --arg cutoff "$cutoff_ts" '
+        .dailyModelTokens // {} |
+        to_entries |
+        map(select((.key | tonumber) >= ($cutoff | tonumber))) |
+        .[]
+    ' "$stats_file" 2>/dev/null || echo "")
+
+    if [[ -z "$daily_entries" ]]; then
+        # No entries to sync
+        return 0
+    fi
+
+    # Sync each day's data to Firebase
+    while IFS= read -r entry; do
+        if [[ -z "$entry" ]]; then
+            continue
+        fi
+
+        local timestamp=$(echo "$entry" | jq -r '.key')
+        local tokens_by_model=$(echo "$entry" | jq -c '.value.tokensByModel // {}')
+
+        # Convert timestamp to date
+        local date_str
+        if date -r "$timestamp" +%Y-%m-%d >/dev/null 2>&1; then
+            date_str=$(date -r "$timestamp" +%Y-%m-%d)
+        else
+            date_str=$(date -d "@$timestamp" +%Y-%m-%d)
+        fi
+
+        # PUT to Firebase: /daily-tokens/{date}/{machine}.json
+        curl -s -X PUT \
+            --connect-timeout 2 \
+            --max-time 3 \
+            -H "Content-Type: application/json" \
+            -d "$tokens_by_model" \
+            "${CLAUDE_FIREBASE_URL}/daily-tokens/${date_str}/${machine}.json?auth=${CLAUDE_FIREBASE_SECRET}" \
+            >/dev/null 2>&1 || true
+    done <<< "$daily_entries"
+
+    # Update sync timestamp
+    touch "$TOKEN_SYNC_TS_FILE"
+}
+
+# token-read: Read aggregated model token stats from Firebase
+cmd_token_read() {
+    local days=7
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --days)
+                days=$2
+                shift 2
+                ;;
+            *)
+                shift
+                ;;
+        esac
+    done
+
+    # Check cache freshness
+    if [[ -f "$TOKEN_READ_CACHE_FILE" ]]; then
+        local now=$(date +%s)
+        local cache_mtime
+        if stat -f %m "$TOKEN_READ_CACHE_FILE" >/dev/null 2>&1; then
+            cache_mtime=$(stat -f %m "$TOKEN_READ_CACHE_FILE")
+        else
+            cache_mtime=$(stat -c %Y "$TOKEN_READ_CACHE_FILE")
+        fi
+        local cache_age=$((now - cache_mtime))
+
+        if [[ $cache_age -lt $TOKEN_READ_CACHE_TTL ]]; then
+            # Cache is fresh, use it
+            cat "$TOKEN_READ_CACHE_FILE"
+            return 0
+        fi
+    fi
+
+    check_credentials
+
+    # Calculate cutoff date
+    local cutoff_date
+    if date -v-${days}d +%Y-%m-%d >/dev/null 2>&1; then
+        cutoff_date=$(date -v-${days}d +%Y-%m-%d)
+    else
+        cutoff_date=$(date -d "${days} days ago" +%Y-%m-%d)
+    fi
+
+    # Fetch all daily token data from Firebase
+    local daily_tokens=$(curl -s -X GET \
+        --connect-timeout 2 \
+        --max-time 5 \
+        "${CLAUDE_FIREBASE_URL}/daily-tokens.json?auth=${CLAUDE_FIREBASE_SECRET}" 2>/dev/null || echo "{}")
+
+    # Aggregate tokens across all machines for dates >= cutoff
+    local aggregated=$(echo "$daily_tokens" | jq --arg cutoff "$cutoff_date" '
+        to_entries |
+        map(select(.key >= $cutoff)) |
+        map(.value | to_entries | .[]) |
+        reduce .[] as $machine ({}; . as $acc | $machine.value | to_entries | reduce .[] as $model ($acc; .[$model.key] += $model.value))
+    ' 2>/dev/null || echo "{}")
+
+    # Cache the result
+    echo "$aggregated" > "$TOKEN_READ_CACHE_FILE"
+    echo "$aggregated"
+}
+
+# token-prune: Delete old daily token stats from Firebase
+cmd_token_prune() {
+    local days=14
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --days)
+                days=$2
+                shift 2
+                ;;
+            *)
+                shift
+                ;;
+        esac
+    done
+
+    check_credentials
+
+    # Calculate cutoff date
+    local cutoff_date
+    if date -v-${days}d +%Y-%m-%d >/dev/null 2>&1; then
+        cutoff_date=$(date -v-${days}d +%Y-%m-%d)
+    else
+        cutoff_date=$(date -d "${days} days ago" +%Y-%m-%d)
+    fi
+
+    # Fetch all daily token data from Firebase
+    local daily_tokens=$(curl -s -X GET \
+        --connect-timeout 2 \
+        --max-time 5 \
+        "${CLAUDE_FIREBASE_URL}/daily-tokens.json?auth=${CLAUDE_FIREBASE_SECRET}" 2>/dev/null || echo "{}")
+
+    # Find dates older than cutoff
+    local old_dates=$(echo "$daily_tokens" | jq -r --arg cutoff "$cutoff_date" '
+        to_entries |
+        map(select(.key < $cutoff)) |
+        .[].key
+    ' 2>/dev/null || echo "")
+
+    if [[ -n "$old_dates" ]]; then
+        while IFS= read -r date; do
+            if [[ -n "$date" ]]; then
+                curl -s -X DELETE \
+                    --connect-timeout 2 \
+                    --max-time 3 \
+                    "${CLAUDE_FIREBASE_URL}/daily-tokens/${date}.json?auth=${CLAUDE_FIREBASE_SECRET}" \
+                    >/dev/null 2>&1 || true
+            fi
+        done <<< "$old_dates"
+    fi
+}
+
 # Main command dispatcher
 if [[ $# -lt 1 ]]; then
     usage
@@ -278,6 +506,15 @@ case "$COMMAND" in
         ;;
     prune)
         cmd_prune "$@"
+        ;;
+    token-sync)
+        cmd_token_sync
+        ;;
+    token-read)
+        cmd_token_read "$@"
+        ;;
+    token-prune)
+        cmd_token_prune "$@"
         ;;
     *)
         echo "Error: Unknown command: $COMMAND" >&2

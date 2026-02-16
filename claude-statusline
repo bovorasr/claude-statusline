@@ -112,18 +112,56 @@ EXTRA_USED=$(echo "$USAGE" | jq -r '.extra_usage.used_credits // 0 | floor / 100
 EXTRA_LIMIT=$(echo "$USAGE" | jq -r '.extra_usage.monthly_limit // 0 | floor / 100' 2>/dev/null)
 
 # Calculate per-model contribution to 7-day total based on token usage
-STATS_FILE="$HOME/.claude/stats-cache.json"
-if [[ -f "$STATS_FILE" ]] && [[ "$SEVEN_DAY" != "?" ]] && [[ "$SONNET" != "null" ]]; then
-    # Get output tokens for each model (using output tokens as proxy for usage)
-    HAIKU_TOKENS=$(jq -r '.modelUsage."claude-haiku-4-5-20251001".outputTokens // 0' "$STATS_FILE" 2>/dev/null || echo 0)
-    SONNET_TOKENS=$(jq -r '.modelUsage."claude-sonnet-4-5-20250929".outputTokens // 0' "$STATS_FILE" 2>/dev/null || echo 0)
-    OPUS_TOKENS=$(jq -r '.modelUsage."claude-opus-4-6".outputTokens // 0' "$STATS_FILE" 2>/dev/null || echo 0)
+# Try Firebase first (cross-machine, 7-day windowed), fall back to local dailyModelTokens
+HAIKU_TOKENS=0
+SONNET_TOKENS=0
+OPUS_TOKENS=0
 
+if [[ "$SEVEN_DAY" != "?" ]] && [[ "$SONNET" != "null" ]]; then
+    # Try Firebase first
+    if [[ -n "${CLAUDE_FIREBASE_URL:-}" ]] && command -v claude-session-sync >/dev/null 2>&1; then
+        TOKEN_DATA=$(claude-session-sync token-read --days 7 2>/dev/null || echo "{}")
+
+        if [[ "$TOKEN_DATA" != "{}" ]]; then
+            # Use regex matching for model IDs to be resilient to version changes
+            HAIKU_TOKENS=$(echo "$TOKEN_DATA" | jq -r 'to_entries | map(select(.key | test("haiku"))) | map(.value) | add // 0' 2>/dev/null || echo 0)
+            SONNET_TOKENS=$(echo "$TOKEN_DATA" | jq -r 'to_entries | map(select(.key | test("sonnet"))) | map(.value) | add // 0' 2>/dev/null || echo 0)
+            OPUS_TOKENS=$(echo "$TOKEN_DATA" | jq -r 'to_entries | map(select(.key | test("opus"))) | map(.value) | add // 0' 2>/dev/null || echo 0)
+        fi
+    fi
+
+    # Fallback to local dailyModelTokens (7-day windowed, still better than all-time)
+    if [[ $HAIKU_TOKENS -eq 0 ]] && [[ $SONNET_TOKENS -eq 0 ]] && [[ $OPUS_TOKENS -eq 0 ]]; then
+        STATS_FILE="$HOME/.claude/stats-cache.json"
+        if [[ -f "$STATS_FILE" ]]; then
+            # Calculate cutoff timestamp (7 days ago)
+            local cutoff_ts
+            if date -v-7d +%s >/dev/null 2>&1; then
+                cutoff_ts=$(date -v-7d +%s)
+            else
+                cutoff_ts=$(date -d "7 days ago" +%s)
+            fi
+
+            # Aggregate tokens from dailyModelTokens for last 7 days
+            local daily_data=$(jq --arg cutoff "$cutoff_ts" '
+                .dailyModelTokens // {} |
+                to_entries |
+                map(select((.key | tonumber) >= ($cutoff | tonumber))) |
+                map(.value.tokensByModel // {}) |
+                reduce .[] as $day ({}; . as $acc | $day | to_entries | reduce .[] as $model ($acc; .[$model.key] += $model.value))
+            ' "$STATS_FILE" 2>/dev/null || echo "{}")
+
+            if [[ "$daily_data" != "{}" ]]; then
+                HAIKU_TOKENS=$(echo "$daily_data" | jq -r 'to_entries | map(select(.key | test("haiku"))) | map(.value) | add // 0' 2>/dev/null || echo 0)
+                SONNET_TOKENS=$(echo "$daily_data" | jq -r 'to_entries | map(select(.key | test("sonnet"))) | map(.value) | add // 0' 2>/dev/null || echo 0)
+                OPUS_TOKENS=$(echo "$daily_data" | jq -r 'to_entries | map(select(.key | test("opus"))) | map(.value) | add // 0' 2>/dev/null || echo 0)
+            fi
+        fi
+    fi
+
+    # Calculate per-model contributions
     TOTAL_TOKENS=$((HAIKU_TOKENS + SONNET_TOKENS + OPUS_TOKENS))
-
     if [[ $TOTAL_TOKENS -gt 0 ]]; then
-        # Calculate each model's contribution to the 7-day total
-        # We know Sonnet's percentage from the API, so we can derive the others
         HAIKU_CONTRIB=$(awk "BEGIN {printf \"%.0f\", ($HAIKU_TOKENS / $TOTAL_TOKENS) * $SEVEN_DAY}")
         OPUS_CONTRIB=$(awk "BEGIN {printf \"%.0f\", ($OPUS_TOKENS / $TOTAL_TOKENS) * $SEVEN_DAY}")
 
@@ -314,12 +352,15 @@ if [[ -n "$SESSION_ID" ]] && command -v claude-session-sync >/dev/null 2>&1; the
     # Sync check (backgrounded, throttled to every 10s)
     (
         if [[ "$IS_NEW_SESSION" == "true" ]]; then
-            # New session: sync previous session's final WAL + prune old sessions
+            # New session: sync previous session's final WAL + prune old data
             claude-session-sync sync 2>/dev/null || true
             claude-session-sync prune 2>/dev/null || true
+            claude-session-sync token-sync 2>/dev/null || true
+            claude-session-sync token-prune 2>/dev/null || true
         else
             # Existing session: just sync if it's been 10s
             claude-session-sync sync 2>/dev/null || true
+            claude-session-sync token-sync 2>/dev/null || true
         fi
     ) &
 fi
