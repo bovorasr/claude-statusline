@@ -396,19 +396,6 @@ SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // ""' 2>/dev/null || echo "")
 SESSION_COST=$(echo "$INPUT" | jq -r '.cost.total_cost_usd // 0' 2>/dev/null || echo "0")
 SESSION_COST_FORMATTED=$(printf "%.2f" "$SESSION_COST")
 
-# Estimate session tokens from cost using API pricing (approximate)
-# Pricing per million tokens: Opus=$15, Sonnet=$3, Haiku=$0.25
-SESSION_TOKENS=0
-if [[ -n "$MODEL_ID" ]] && (( $(awk "BEGIN {print ($SESSION_COST > 0)}") )); then
-    if [[ "$MODEL_ID" =~ opus ]]; then
-        SESSION_TOKENS=$(awk "BEGIN {printf \"%.0f\", ($SESSION_COST / 15) * 1000000}")
-    elif [[ "$MODEL_ID" =~ sonnet ]]; then
-        SESSION_TOKENS=$(awk "BEGIN {printf \"%.0f\", ($SESSION_COST / 3) * 1000000}")
-    elif [[ "$MODEL_ID" =~ haiku ]]; then
-        SESSION_TOKENS=$(awk "BEGIN {printf \"%.0f\", ($SESSION_COST / 0.25) * 1000000}")
-    fi
-fi
-
 # WAL write: Capture session cost locally (instant, no network)
 if [[ -n "$SESSION_ID" ]] && command -v claude-session-sync >/dev/null 2>&1; then
     # Check if this is a new session (WAL file didn't exist before)
@@ -532,10 +519,6 @@ fi
 
 if [[ -n "$MODEL_DISPLAY" ]]; then
     OUTPUT="$OUTPUT ${SEP} ${MODEL_DISPLAY}"
-    # Append session tokens if available (shows pace compared to 7-day usage)
-    if [[ $SESSION_TOKENS -gt 0 ]]; then
-        OUTPUT="$OUTPUT ${BRIGHT_BLUE} $(format_tokens $SESSION_TOKENS)${RESET}"
-    fi
 fi
 
 echo "$OUTPUT"
