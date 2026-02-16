@@ -173,6 +173,19 @@ if [[ "$SEVEN_DAY" != "?" ]] && [[ "$SONNET" != "null" ]]; then
     fi
 fi
 
+# Match active model ID to token count for display
+ACTIVE_MODEL_TOKENS=0
+MODEL_ID=$(echo "$INPUT" | jq -r '.model.id // ""' 2>/dev/null || echo "")
+if [[ -n "$MODEL_ID" ]]; then
+    if [[ "$MODEL_ID" =~ haiku ]]; then
+        ACTIVE_MODEL_TOKENS=$HAIKU_TOKENS
+    elif [[ "$MODEL_ID" =~ sonnet ]]; then
+        ACTIVE_MODEL_TOKENS=$SONNET_TOKENS
+    elif [[ "$MODEL_ID" =~ opus ]]; then
+        ACTIVE_MODEL_TOKENS=$OPUS_TOKENS
+    fi
+fi
+
 # Format compact time until reset (with color)
 time_until() {
     local reset_time=$1
@@ -264,6 +277,18 @@ color_usage_synthetic() {
         echo "?"
     else
         echo "${BRIGHT_BLUE}${val}%${RESET}"
+    fi
+}
+
+# Format token count as human-readable
+format_tokens() {
+    local tokens=$1
+    if [[ $tokens -ge 1000000 ]]; then
+        awk "BEGIN {printf \"%.1fM\", $tokens / 1000000}"
+    elif [[ $tokens -ge 1000 ]]; then
+        awk "BEGIN {printf \"%.0fK\", $tokens / 1000}"
+    else
+        echo "$tokens"
     fi
 }
 
@@ -458,7 +483,11 @@ elif [[ -n "$MODEL_PLAN" ]]; then
 fi
 
 if [[ -n "$MODEL_DISPLAY" ]]; then
-    OUTPUT="$OUTPUT ${SEP} ${MODEL_DISPLAY}"
+    if [[ $ACTIVE_MODEL_TOKENS -gt 0 ]]; then
+        OUTPUT="$OUTPUT ${SEP} ${MODEL_DISPLAY} ${DIM}(${RESET}${BRIGHT_BLUE}$(format_tokens $ACTIVE_MODEL_TOKENS)${RESET}${DIM})${RESET}"
+    else
+        OUTPUT="$OUTPUT ${SEP} ${MODEL_DISPLAY}"
+    fi
 fi
 
 echo "$OUTPUT"
