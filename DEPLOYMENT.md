@@ -23,19 +23,6 @@ curl -fsSL https://raw.githubusercontent.com/bovorasr/claude-statusline/main/ins
 
 The statusline will read OAuth tokens from `~/.claude/.credentials.json` automatically.
 
-### With Dotfiles (chezmoi)
-
-If you're managing dotfiles with chezmoi:
-
-```bash
-# Apply dotfiles configuration
-chezmoi apply -v
-
-# Verify installation
-which claude-statusline
-# Should show: ~/.local/bin/claude-statusline
-```
-
 ## OAuth Token Sources (Priority Order)
 
 The statusline tries these sources in order:
