@@ -11,7 +11,7 @@ echo "Installing Claude Code statusline..."
 mkdir -p "$BIN_DIR"
 
 # Download and install scripts
-for script in claude-statusline claude-session-sync claude-billing-cost; do
+for script in claude-statusline claude-session-sync claude-session-bootstrap claude-billing-cost; do
     echo "  - Downloading $script..."
     curl -fsSL "$BASE/$script" -o "$BIN_DIR/$script"
     chmod +x "$BIN_DIR/$script"
@@ -55,5 +55,8 @@ echo "  1. Create a Firebase Realtime Database at https://console.firebase.googl
 echo "  2. Add to your shell RC file (~/.bashrc or ~/.zshrc):"
 echo "       export CLAUDE_FIREBASE_URL='https://your-db.firebaseio.com'"
 echo "       export CLAUDE_FIREBASE_SECRET='your-secret-token'"
+echo "  3. Bootstrap with existing billing data (optional, one-time):"
+echo "       source ~/.zshrc  # or ~/.bashrc"
+echo "       claude-session-bootstrap"
 echo ""
 echo "Without Firebase, the statusline still works - it just shows '?' for monthly totals."

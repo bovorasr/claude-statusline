@@ -1,0 +1,181 @@
+#!/usr/bin/env bash
+
+# claude-session-bootstrap: One-time import of existing billing data to Firebase
+# Creates a synthetic session record from stats-cache.json to bootstrap Firebase tracking
+# Safe to run multiple times - generates unique session IDs per machine/run
+
+set -euo pipefail
+
+usage() {
+    cat <<EOF
+Usage: claude-session-bootstrap
+
+Imports your current billing cycle costs from ~/.claude/stats-cache.json into
+Firebase as a single synthetic session. This gives you a starting baseline for
+cross-machine tracking.
+
+The session ID is generated as: bootstrap-{hostname}-{timestamp}
+
+This ensures:
+- Unique IDs per machine
+- Unique IDs per run (safe to re-run)
+- Identifiable as bootstrap data (prefix)
+
+Environment variables required:
+  CLAUDE_FIREBASE_URL     - Firebase RTDB URL (e.g., https://your-db.firebaseio.com)
+  CLAUDE_FIREBASE_SECRET  - Firebase auth secret
+
+Examples:
+  # One-time setup after installing Firebase sync
+  claude-session-bootstrap
+
+  # Safe to run on multiple machines - each gets unique session ID
+  claude-session-bootstrap
+EOF
+    exit 1
+}
+
+# Check arguments
+if [[ "${1:-}" == "-h" ]] || [[ "${1:-}" == "--help" ]]; then
+    usage
+fi
+
+# Check Firebase credentials
+if [[ -z "${CLAUDE_FIREBASE_URL:-}" ]] || [[ -z "${CLAUDE_FIREBASE_SECRET:-}" ]]; then
+    echo "Error: CLAUDE_FIREBASE_URL and CLAUDE_FIREBASE_SECRET must be set" >&2
+    echo "" >&2
+    echo "Add to your ~/.zshrc or ~/.bashrc:" >&2
+    echo "  export CLAUDE_FIREBASE_URL='https://your-db.firebaseio.com'" >&2
+    echo "  export CLAUDE_FIREBASE_SECRET='your-secret-token'" >&2
+    exit 1
+fi
+
+STATS_FILE="$HOME/.claude/stats-cache.json"
+
+if [[ ! -f "$STATS_FILE" ]]; then
+    echo "Error: $STATS_FILE not found" >&2
+    echo "Run some Claude Code sessions first to generate billing data" >&2
+    exit 1
+fi
+
+# Get billing day from ~/.claude.json (same logic as other scripts)
+BILLING_DAY=$(jq -r '.oauthAccount.subscriptionCreatedAt // ""' ~/.claude.json 2>/dev/null | cut -d- -f3 | cut -dT -f1 || echo "12")
+
+# Calculate billing cycle start (same as claude-billing-cost)
+CURRENT_DAY=$(date +%d | sed 's/^0//')
+CURRENT_MONTH=$(date +%Y-%m)
+
+if [[ $CURRENT_DAY -ge $BILLING_DAY ]]; then
+    CYCLE_START="${CURRENT_MONTH}-${BILLING_DAY}"
+else
+    # Before billing day, cycle started last month
+    if date -v-1m +%Y-%m >/dev/null 2>&1; then
+        # BSD date (macOS)
+        CYCLE_START=$(date -v-1m +%Y-%m)-${BILLING_DAY}
+    else
+        # GNU date (Linux)
+        CYCLE_START=$(date -d "1 month ago" +%Y-%m)-${BILLING_DAY}
+    fi
+fi
+
+echo "Billing cycle: $CYCLE_START to now"
+
+# API pricing (per million tokens) - same as claude-billing-cost
+OPUS_INPUT=15.00
+OPUS_OUTPUT=75.00
+OPUS_CACHE_WRITE=18.75
+OPUS_CACHE_READ=1.50
+
+SONNET_INPUT=3.00
+SONNET_OUTPUT=15.00
+SONNET_CACHE_WRITE=3.75
+SONNET_CACHE_READ=0.30
+
+HAIKU_INPUT=0.25
+HAIKU_OUTPUT=1.25
+HAIKU_CACHE_WRITE=0.30
+HAIKU_CACHE_READ=0.03
+
+# Get token counts from stats file
+OPUS_IN=$(jq -r '.modelUsage."claude-opus-4-6".inputTokens // 0' "$STATS_FILE")
+OPUS_OUT=$(jq -r '.modelUsage."claude-opus-4-6".outputTokens // 0' "$STATS_FILE")
+OPUS_CACHE_W=$(jq -r '.modelUsage."claude-opus-4-6".cacheCreationInputTokens // 0' "$STATS_FILE")
+OPUS_CACHE_R=$(jq -r '.modelUsage."claude-opus-4-6".cacheReadInputTokens // 0' "$STATS_FILE")
+
+SONNET_IN=$(jq -r '.modelUsage."claude-sonnet-4-5-20250929".inputTokens // 0' "$STATS_FILE")
+SONNET_OUT=$(jq -r '.modelUsage."claude-sonnet-4-5-20250929".outputTokens // 0' "$STATS_FILE")
+SONNET_CACHE_W=$(jq -r '.modelUsage."claude-sonnet-4-5-20250929".cacheCreationInputTokens // 0' "$STATS_FILE")
+SONNET_CACHE_R=$(jq -r '.modelUsage."claude-sonnet-4-5-20250929".cacheReadInputTokens // 0' "$STATS_FILE")
+
+HAIKU_IN=$(jq -r '.modelUsage."claude-haiku-4-5-20251001".inputTokens // 0' "$STATS_FILE")
+HAIKU_OUT=$(jq -r '.modelUsage."claude-haiku-4-5-20251001".outputTokens // 0' "$STATS_FILE")
+HAIKU_CACHE_W=$(jq -r '.modelUsage."claude-haiku-4-5-20251001".cacheCreationInputTokens // 0' "$STATS_FILE")
+HAIKU_CACHE_R=$(jq -r '.modelUsage."claude-haiku-4-5-20251001".cacheReadInputTokens // 0' "$STATS_FILE")
+
+# Calculate total cost
+TOTAL_COST=$(awk "BEGIN {
+    opus = ($OPUS_IN / 1000000 * $OPUS_INPUT) + \
+           ($OPUS_OUT / 1000000 * $OPUS_OUTPUT) + \
+           ($OPUS_CACHE_W / 1000000 * $OPUS_CACHE_WRITE) + \
+           ($OPUS_CACHE_R / 1000000 * $OPUS_CACHE_READ);
+
+    sonnet = ($SONNET_IN / 1000000 * $SONNET_INPUT) + \
+             ($SONNET_OUT / 1000000 * $SONNET_OUTPUT) + \
+             ($SONNET_CACHE_W / 1000000 * $SONNET_CACHE_WRITE) + \
+             ($SONNET_CACHE_R / 1000000 * $SONNET_CACHE_READ);
+
+    haiku = ($HAIKU_IN / 1000000 * $HAIKU_INPUT) + \
+            ($HAIKU_OUT / 1000000 * $HAIKU_OUTPUT) + \
+            ($HAIKU_CACHE_W / 1000000 * $HAIKU_CACHE_WRITE) + \
+            ($HAIKU_CACHE_R / 1000000 * $HAIKU_CACHE_READ);
+
+    printf \"%.2f\", (opus + sonnet + haiku)
+}")
+
+if [[ "$TOTAL_COST" == "0.00" ]]; then
+    echo "No billing data found in $STATS_FILE"
+    echo "Run some Claude Code sessions first"
+    exit 1
+fi
+
+echo "Total billing cycle cost: \$$TOTAL_COST"
+
+# Generate unique session ID: bootstrap-{hostname}-{timestamp}
+HOSTNAME=$(hostname -s)
+TIMESTAMP=$(date +%s)
+SESSION_ID="bootstrap-${HOSTNAME}-${TIMESTAMP}"
+
+echo "Generated session ID: $SESSION_ID"
+
+# Create session data JSON
+SESSION_DATA=$(cat <<EOF
+{
+  "cost": $TOTAL_COST,
+  "ts": $TIMESTAMP,
+  "machine": "$HOSTNAME"
+}
+EOF
+)
+
+echo "Uploading to Firebase..."
+
+# Upload to Firebase
+RESPONSE=$(curl -s -X PUT \
+    --connect-timeout 5 \
+    --max-time 10 \
+    -H "Content-Type: application/json" \
+    -d "$SESSION_DATA" \
+    "${CLAUDE_FIREBASE_URL}/sessions/${SESSION_ID}.json?auth=${CLAUDE_FIREBASE_SECRET}")
+
+if echo "$RESPONSE" | jq -e '.cost' >/dev/null 2>&1; then
+    echo "✓ Successfully bootstrapped Firebase with \$$TOTAL_COST"
+    echo ""
+    echo "Your statusline will now show this baseline. Future sessions will increment from here."
+    echo ""
+    echo "To verify:"
+    echo "  claude-session-sync read"
+else
+    echo "✗ Upload failed" >&2
+    echo "Response: $RESPONSE" >&2
+    exit 1
+fi

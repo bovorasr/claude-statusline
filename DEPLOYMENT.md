@@ -71,6 +71,7 @@ Expected output:
 ```
 -rwxr-xr-x  1 user  staff   12K Feb 16 claude-billing-cost
 -rwxr-xr-x  1 user  staff   9.5K Feb 16 claude-session-sync
+-rwxr-xr-x  1 user  staff   6.5K Feb 16 claude-session-bootstrap
 -rwxr-xr-x  1 user  staff   14K Feb 16 claude-statusline
 ```
 
@@ -162,6 +163,20 @@ This means no OAuth token was found. Check:
    ```
 
 3. Check Firebase RTDB rules allow write access with secret
+
+### Bootstrap existing data
+
+If you have existing Claude Code usage and want to populate Firebase with your current billing cycle costs:
+
+```bash
+# Make sure Firebase env vars are set
+echo $CLAUDE_FIREBASE_URL
+
+# Bootstrap (one-time)
+claude-session-bootstrap
+```
+
+This creates a synthetic session with your current billing cycle total, giving you an immediate baseline. Safe to run on multiple machines - each generates a unique session ID.
 
 ## Updates
 

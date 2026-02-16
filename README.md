@@ -74,6 +74,13 @@ Track session costs across all your machines in real-time.
    source ~/.zshrc  # or ~/.bashrc
    ```
 
+4. **Bootstrap with existing data** (optional, one-time):
+   ```bash
+   claude-session-bootstrap
+   ```
+
+   This imports your current billing cycle costs from `~/.claude/stats-cache.json` into Firebase as a starting baseline. Safe to run on multiple machines - generates unique session IDs per machine/run.
+
 Without Firebase, the statusline still works - monthly totals show `?`.
 
 ## What It Shows
@@ -108,7 +115,40 @@ Example statusline:
 
 - **`claude-statusline`** - Main statusline script with portable OAuth token reading
 - **`claude-session-sync`** - Firebase WAL (write-ahead log) + sync for cross-machine tracking
+- **`claude-session-bootstrap`** - One-time import of existing billing data to Firebase
 - **`claude-billing-cost`** - Local-only fallback for billing cycle cost calculation
+
+### Bootstrap Script
+
+The `claude-session-bootstrap` script imports your existing billing cycle costs into Firebase to give you a starting baseline. This is useful when:
+
+- Setting up Firebase sync for the first time
+- You already have Claude Code usage history
+- You want your statusline to show accurate monthly totals immediately
+
+**How it works:**
+1. Reads token counts from `~/.claude/stats-cache.json`
+2. Calculates API-equivalent cost for current billing cycle
+3. Creates a synthetic session record with unique ID: `bootstrap-{hostname}-{timestamp}`
+4. Uploads to Firebase
+
+**Session ID format ensures:**
+- No collisions between machines (includes hostname)
+- Safe to re-run (includes timestamp)
+- Identifiable as bootstrap data (has prefix)
+
+**Example:**
+```bash
+# After setting up Firebase environment variables
+claude-session-bootstrap
+
+# Output:
+# Billing cycle: 2026-02-12 to now
+# Total billing cycle cost: $206.48
+# Generated session ID: bootstrap-macbook-1739664000
+# Uploading to Firebase...
+# ✓ Successfully bootstrapped Firebase with $206.48
+```
 
 ## Development
 
