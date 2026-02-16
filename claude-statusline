@@ -135,7 +135,7 @@ if [[ "$SEVEN_DAY" != "?" ]] && [[ "$SONNET" != "null" ]]; then
         STATS_FILE="$HOME/.claude/stats-cache.json"
         if [[ -f "$STATS_FILE" ]]; then
             # Calculate cutoff timestamp (7 days ago)
-            local cutoff_ts
+            cutoff_ts=""
             if date -v-7d +%s >/dev/null 2>&1; then
                 cutoff_ts=$(date -v-7d +%s)
             else
@@ -143,7 +143,7 @@ if [[ "$SEVEN_DAY" != "?" ]] && [[ "$SONNET" != "null" ]]; then
             fi
 
             # Aggregate tokens from dailyModelTokens for last 7 days
-            local daily_data=$(jq --arg cutoff "$cutoff_ts" '
+            daily_data=$(jq --arg cutoff "$cutoff_ts" '
                 .dailyModelTokens // {} |
                 to_entries |
                 map(select((.key | tonumber) >= ($cutoff | tonumber))) |
