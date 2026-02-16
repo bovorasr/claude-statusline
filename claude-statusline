@@ -349,11 +349,52 @@ if [[ -z "$MONTHLY_TOTAL" ]]; then
     MONTHLY_TOTAL="${LIGHT_PURPLE}?${RESET}"
 fi
 
-# Display: V:$34.58/$160 (Value: session/monthly)
-if [[ -n "$OUTPUT" ]]; then
-    OUTPUT="$OUTPUT ${SEP} V${COLON}${LIGHT_PURPLE}\$${SESSION_COST_FORMATTED}${RESET}/${MONTHLY_TOTAL}"
+# Calculate billing cycle days for V: display
+BILLING_DAY=$(jq -r '.oauthAccount.subscriptionCreatedAt // ""' ~/.claude.json 2>/dev/null | cut -d- -f3 | cut -dT -f1 || echo "12")
+CURRENT_DAY=$(date +%d | sed 's/^0//')
+CURRENT_MONTH=$(date +%Y-%m)
+
+# Calculate cycle start and end dates
+if [[ $CURRENT_DAY -ge $BILLING_DAY ]]; then
+    # We're past billing day this month - cycle started this month
+    CYCLE_START="${CURRENT_MONTH}-${BILLING_DAY}"
+    # Cycle ends next month on billing day
+    if date -v+1m +%Y-%m >/dev/null 2>&1; then
+        CYCLE_END=$(date -v+1m +%Y-%m)-${BILLING_DAY}
+    else
+        CYCLE_END=$(date -d "1 month" +%Y-%m)-${BILLING_DAY}
+    fi
 else
-    OUTPUT="V${COLON}${LIGHT_PURPLE}\$${SESSION_COST_FORMATTED}${RESET}/${MONTHLY_TOTAL}"
+    # Before billing day - cycle started last month
+    if date -v-1m +%Y-%m >/dev/null 2>&1; then
+        CYCLE_START=$(date -v-1m +%Y-%m)-${BILLING_DAY}
+    else
+        CYCLE_START=$(date -d "1 month ago" +%Y-%m)-${BILLING_DAY}
+    fi
+    CYCLE_END="${CURRENT_MONTH}-${BILLING_DAY}"
+fi
+
+# Calculate days elapsed and remaining
+CURRENT_TS=$(date +%s)
+if date -j -f "%Y-%m-%d" "$CYCLE_START" +%s >/dev/null 2>&1; then
+    # BSD date (macOS)
+    CYCLE_START_TS=$(date -j -f "%Y-%m-%d" "$CYCLE_START" +%s)
+    CYCLE_END_TS=$(date -j -f "%Y-%m-%d" "$CYCLE_END" +%s)
+else
+    # GNU date (Linux)
+    CYCLE_START_TS=$(date -d "$CYCLE_START" +%s)
+    CYCLE_END_TS=$(date -d "$CYCLE_END" +%s)
+fi
+
+DAYS_ELAPSED=$(( (CURRENT_TS - CYCLE_START_TS) / 86400 ))
+DAYS_REMAINING=$(( (CYCLE_END_TS - CURRENT_TS) / 86400 ))
+
+# Display: V:$34.58/$160 | +11/-17d (Value: session/monthly | days elapsed/remaining)
+CYCLE_DAYS="${CYAN}+${DAYS_ELAPSED}${RESET}${DIM}/${RESET}${CYAN}-${DAYS_REMAINING}d${RESET}"
+if [[ -n "$OUTPUT" ]]; then
+    OUTPUT="$OUTPUT ${SEP} V${COLON}${LIGHT_PURPLE}\$${SESSION_COST_FORMATTED}${RESET}${DIM}/${RESET}${MONTHLY_TOTAL} ${SEP} ${CYCLE_DAYS}"
+else
+    OUTPUT="V${COLON}${LIGHT_PURPLE}\$${SESSION_COST_FORMATTED}${RESET}${DIM}/${RESET}${MONTHLY_TOTAL} ${SEP} ${CYCLE_DAYS}"
 fi
 
 # Add context window percentage (from Claude Code session data)
