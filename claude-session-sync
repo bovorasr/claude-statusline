@@ -316,42 +316,25 @@ cmd_token_sync() {
         cutoff_date=$(date -d "8 days ago" +%Y-%m-%d)
     fi
 
-    local cutoff_ts
-    if date -j -f "%Y-%m-%d" "$cutoff_date" +%s >/dev/null 2>&1; then
-        cutoff_ts=$(date -j -f "%Y-%m-%d" "$cutoff_date" +%s)
-    else
-        cutoff_ts=$(date -d "$cutoff_date" +%s)
-    fi
+    # Extract dailyModelTokens from stats-cache.json (it's an array)
+    local daily_entries=$(jq -c --arg cutoff "$cutoff_date" '
+        .dailyModelTokens // [] |
+        map(select(.date >= $cutoff))
+    ' "$stats_file" 2>/dev/null || echo "[]")
 
-    # Extract dailyModelTokens from stats-cache.json
-    local daily_entries=$(jq -r --arg cutoff "$cutoff_ts" '
-        .dailyModelTokens // {} |
-        to_entries |
-        map(select((.key | tonumber) >= ($cutoff | tonumber))) |
-        .[]
-    ' "$stats_file" 2>/dev/null || echo "")
-
-    if [[ -z "$daily_entries" ]]; then
+    if [[ "$daily_entries" == "[]" ]]; then
         # No entries to sync
         return 0
     fi
 
     # Sync each day's data to Firebase
-    while IFS= read -r entry; do
+    echo "$daily_entries" | jq -c '.[]' | while IFS= read -r entry; do
         if [[ -z "$entry" ]]; then
             continue
         fi
 
-        local timestamp=$(echo "$entry" | jq -r '.key')
-        local tokens_by_model=$(echo "$entry" | jq -c '.value.tokensByModel // {}')
-
-        # Convert timestamp to date
-        local date_str
-        if date -r "$timestamp" +%Y-%m-%d >/dev/null 2>&1; then
-            date_str=$(date -r "$timestamp" +%Y-%m-%d)
-        else
-            date_str=$(date -d "@$timestamp" +%Y-%m-%d)
-        fi
+        local date_str=$(echo "$entry" | jq -r '.date')
+        local tokens_by_model=$(echo "$entry" | jq -c '.tokensByModel // {}')
 
         # PUT to Firebase: /daily-tokens/{date}/{machine}.json
         curl -s -X PUT \
@@ -361,7 +344,7 @@ cmd_token_sync() {
             -d "$tokens_by_model" \
             "${CLAUDE_FIREBASE_URL}/daily-tokens/${date_str}/${machine}.json?auth=${CLAUDE_FIREBASE_SECRET}" \
             >/dev/null 2>&1 || true
-    done <<< "$daily_entries"
+    done
 
     # Update sync timestamp
     touch "$TOKEN_SYNC_TS_FILE"

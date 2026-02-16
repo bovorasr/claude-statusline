@@ -134,20 +134,19 @@ if [[ "$SEVEN_DAY" != "?" ]] && [[ "$SONNET" != "null" ]]; then
     if [[ $HAIKU_TOKENS -eq 0 ]] && [[ $SONNET_TOKENS -eq 0 ]] && [[ $OPUS_TOKENS -eq 0 ]]; then
         STATS_FILE="$HOME/.claude/stats-cache.json"
         if [[ -f "$STATS_FILE" ]]; then
-            # Calculate cutoff timestamp (7 days ago)
-            cutoff_ts=""
-            if date -v-7d +%s >/dev/null 2>&1; then
-                cutoff_ts=$(date -v-7d +%s)
+            # Calculate cutoff date (7 days ago)
+            cutoff_date=""
+            if date -v-7d +%Y-%m-%d >/dev/null 2>&1; then
+                cutoff_date=$(date -v-7d +%Y-%m-%d)
             else
-                cutoff_ts=$(date -d "7 days ago" +%s)
+                cutoff_date=$(date -d "7 days ago" +%Y-%m-%d)
             fi
 
-            # Aggregate tokens from dailyModelTokens for last 7 days
-            daily_data=$(jq --arg cutoff "$cutoff_ts" '
-                .dailyModelTokens // {} |
-                to_entries |
-                map(select((.key | tonumber) >= ($cutoff | tonumber))) |
-                map(.value.tokensByModel // {}) |
+            # Aggregate tokens from dailyModelTokens for last 7 days (array structure)
+            daily_data=$(jq --arg cutoff "$cutoff_date" '
+                .dailyModelTokens // [] |
+                map(select(.date >= $cutoff)) |
+                map(.tokensByModel // {}) |
                 reduce .[] as $day ({}; . as $acc | $day | to_entries | reduce .[] as $model ($acc; .[$model.key] += $model.value))
             ' "$STATS_FILE" 2>/dev/null || echo "{}")
 
