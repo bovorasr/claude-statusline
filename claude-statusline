@@ -349,55 +349,39 @@ if [[ "$FIVE_HOUR" != "?" ]] || [[ "$SEVEN_DAY" != "?" ]]; then
         OUTPUT="${OUTPUT}~${SEVEN_TIME}"
     fi
 
-    # Add per-model contribution to 7-day total as equation: 7d:15% = S:10% (315K) + O:5% (139K)
+    # Add per-model breakdown: S shows % (from API), O/H show tokens only (for hidden limit inference)
+    # Format: 7d:18% = S:11% + O:245K
     # Order: H, S, O
     MODELS_OUTPUT=""
     FIRST_MODEL=true
 
-    # Check if HAIKU is non-zero (handles both integer 0 and decimal 0.00)
-    if [[ "${HAIKU:-null}" != "null" ]] && (( $(awk "BEGIN {print ($HAIKU > 0)}") )); then
+    # Haiku: show tokens only (no synthetic %)
+    if [[ $HAIKU_TOKENS -gt 0 ]]; then
         if [[ "$FIRST_MODEL" == "true" ]]; then
-            MODELS_OUTPUT="H${COLON}$(color_usage_synthetic $HAIKU)"
-            if [[ $HAIKU_TOKENS -gt 0 ]]; then
-                MODELS_OUTPUT="$MODELS_OUTPUT ${DIM}(${RESET}${BRIGHT_BLUE}$(format_tokens $HAIKU_TOKENS)${RESET}${DIM})${RESET}"
-            fi
+            MODELS_OUTPUT="H${COLON}${BRIGHT_BLUE}$(format_tokens $HAIKU_TOKENS)${RESET}"
             FIRST_MODEL=false
         else
-            MODELS_OUTPUT="$MODELS_OUTPUT ${PLUS} H${COLON}$(color_usage_synthetic $HAIKU)"
-            if [[ $HAIKU_TOKENS -gt 0 ]]; then
-                MODELS_OUTPUT="$MODELS_OUTPUT ${DIM}(${RESET}${BRIGHT_BLUE}$(format_tokens $HAIKU_TOKENS)${RESET}${DIM})${RESET}"
-            fi
+            MODELS_OUTPUT="$MODELS_OUTPUT ${PLUS} H${COLON}${BRIGHT_BLUE}$(format_tokens $HAIKU_TOKENS)${RESET}"
         fi
     fi
 
+    # Sonnet: show % only (from API, no tokens)
     if [[ "$SONNET" != "null" ]] && [[ "$SONNET" != "?" ]]; then
         if [[ "$FIRST_MODEL" == "true" ]]; then
             MODELS_OUTPUT="S${COLON}$(color_usage $SONNET)"
-            if [[ $SONNET_TOKENS -gt 0 ]]; then
-                MODELS_OUTPUT="$MODELS_OUTPUT ${DIM}(${RESET}${BRIGHT_BLUE}$(format_tokens $SONNET_TOKENS)${RESET}${DIM})${RESET}"
-            fi
             FIRST_MODEL=false
         else
             MODELS_OUTPUT="$MODELS_OUTPUT ${PLUS} S${COLON}$(color_usage $SONNET)"
-            if [[ $SONNET_TOKENS -gt 0 ]]; then
-                MODELS_OUTPUT="$MODELS_OUTPUT ${DIM}(${RESET}${BRIGHT_BLUE}$(format_tokens $SONNET_TOKENS)${RESET}${DIM})${RESET}"
-            fi
         fi
     fi
 
-    # Check if OPUS is non-zero (handles both integer 0 and decimal 0.00)
-    if [[ "$OPUS" != "null" ]] && [[ "$OPUS" != "?" ]] && (( $(awk "BEGIN {print ($OPUS > 0)}") )); then
+    # Opus: show tokens only (no synthetic %)
+    if [[ $OPUS_TOKENS -gt 0 ]]; then
         if [[ "$FIRST_MODEL" == "true" ]]; then
-            MODELS_OUTPUT="O${COLON}$(color_usage_synthetic $OPUS)"
-            if [[ $OPUS_TOKENS -gt 0 ]]; then
-                MODELS_OUTPUT="$MODELS_OUTPUT ${DIM}(${RESET}${BRIGHT_BLUE}$(format_tokens $OPUS_TOKENS)${RESET}${DIM})${RESET}"
-            fi
+            MODELS_OUTPUT="O${COLON}${BRIGHT_BLUE}$(format_tokens $OPUS_TOKENS)${RESET}"
             FIRST_MODEL=false
         else
-            MODELS_OUTPUT="$MODELS_OUTPUT ${PLUS} O${COLON}$(color_usage_synthetic $OPUS)"
-            if [[ $OPUS_TOKENS -gt 0 ]]; then
-                MODELS_OUTPUT="$MODELS_OUTPUT ${DIM}(${RESET}${BRIGHT_BLUE}$(format_tokens $OPUS_TOKENS)${RESET}${DIM})${RESET}"
-            fi
+            MODELS_OUTPUT="$MODELS_OUTPUT ${PLUS} O${COLON}${BRIGHT_BLUE}$(format_tokens $OPUS_TOKENS)${RESET}"
         fi
     fi
 
