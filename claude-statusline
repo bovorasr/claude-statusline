@@ -318,7 +318,7 @@ if [[ "$FIVE_HOUR" != "?" ]] || [[ "$SEVEN_DAY" != "?" ]]; then
         OUTPUT="${OUTPUT}~${SEVEN_TIME}"
     fi
 
-    # Add per-model contribution to 7-day total as equation: 7d:15% = S:10% + O:5%
+    # Add per-model contribution to 7-day total as equation: 7d:15% = S:10% (315K) + O:5% (139K)
     # Order: H, S, O
     MODELS_OUTPUT=""
     FIRST_MODEL=true
@@ -326,27 +326,45 @@ if [[ "$FIVE_HOUR" != "?" ]] || [[ "$SEVEN_DAY" != "?" ]]; then
     if [[ "${HAIKU:-null}" != "null" ]] && [[ "${HAIKU:-0}" != "0" ]]; then
         if [[ "$FIRST_MODEL" == "true" ]]; then
             MODELS_OUTPUT="H${COLON}$(color_usage_synthetic $HAIKU)"
+            if [[ $HAIKU_TOKENS -gt 0 ]]; then
+                MODELS_OUTPUT="$MODELS_OUTPUT ${DIM}(${RESET}${BRIGHT_BLUE}$(format_tokens $HAIKU_TOKENS)${RESET}${DIM})${RESET}"
+            fi
             FIRST_MODEL=false
         else
             MODELS_OUTPUT="$MODELS_OUTPUT ${PLUS} H${COLON}$(color_usage_synthetic $HAIKU)"
+            if [[ $HAIKU_TOKENS -gt 0 ]]; then
+                MODELS_OUTPUT="$MODELS_OUTPUT ${DIM}(${RESET}${BRIGHT_BLUE}$(format_tokens $HAIKU_TOKENS)${RESET}${DIM})${RESET}"
+            fi
         fi
     fi
 
     if [[ "$SONNET" != "null" ]] && [[ "$SONNET" != "?" ]]; then
         if [[ "$FIRST_MODEL" == "true" ]]; then
             MODELS_OUTPUT="S${COLON}$(color_usage $SONNET)"
+            if [[ $SONNET_TOKENS -gt 0 ]]; then
+                MODELS_OUTPUT="$MODELS_OUTPUT ${DIM}(${RESET}${BRIGHT_BLUE}$(format_tokens $SONNET_TOKENS)${RESET}${DIM})${RESET}"
+            fi
             FIRST_MODEL=false
         else
             MODELS_OUTPUT="$MODELS_OUTPUT ${PLUS} S${COLON}$(color_usage $SONNET)"
+            if [[ $SONNET_TOKENS -gt 0 ]]; then
+                MODELS_OUTPUT="$MODELS_OUTPUT ${DIM}(${RESET}${BRIGHT_BLUE}$(format_tokens $SONNET_TOKENS)${RESET}${DIM})${RESET}"
+            fi
         fi
     fi
 
     if [[ "$OPUS" != "null" ]] && [[ "$OPUS" != "?" ]] && [[ "$OPUS" != "0" ]]; then
         if [[ "$FIRST_MODEL" == "true" ]]; then
             MODELS_OUTPUT="O${COLON}$(color_usage_synthetic $OPUS)"
+            if [[ $OPUS_TOKENS -gt 0 ]]; then
+                MODELS_OUTPUT="$MODELS_OUTPUT ${DIM}(${RESET}${BRIGHT_BLUE}$(format_tokens $OPUS_TOKENS)${RESET}${DIM})${RESET}"
+            fi
             FIRST_MODEL=false
         else
             MODELS_OUTPUT="$MODELS_OUTPUT ${PLUS} O${COLON}$(color_usage_synthetic $OPUS)"
+            if [[ $OPUS_TOKENS -gt 0 ]]; then
+                MODELS_OUTPUT="$MODELS_OUTPUT ${DIM}(${RESET}${BRIGHT_BLUE}$(format_tokens $OPUS_TOKENS)${RESET}${DIM})${RESET}"
+            fi
         fi
     fi
 
@@ -483,11 +501,7 @@ elif [[ -n "$MODEL_PLAN" ]]; then
 fi
 
 if [[ -n "$MODEL_DISPLAY" ]]; then
-    if [[ $ACTIVE_MODEL_TOKENS -gt 0 ]]; then
-        OUTPUT="$OUTPUT ${SEP} ${MODEL_DISPLAY} ${DIM}(${RESET}${BRIGHT_BLUE}$(format_tokens $ACTIVE_MODEL_TOKENS)${RESET}${DIM})${RESET}"
-    else
-        OUTPUT="$OUTPUT ${SEP} ${MODEL_DISPLAY}"
-    fi
+    OUTPUT="$OUTPUT ${SEP} ${MODEL_DISPLAY}"
 fi
 
 echo "$OUTPUT"
