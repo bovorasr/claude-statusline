@@ -292,11 +292,6 @@ if [[ "$FIVE_HOUR" != "?" ]] || [[ "$SEVEN_DAY" != "?" ]]; then
     if [[ -n "$MODELS_OUTPUT" ]]; then
         OUTPUT="$OUTPUT ${EQUALS} ${MODELS_OUTPUT}"
     fi
-
-    # Add overage if enabled (Billing: used/limit)
-    if [[ "$EXTRA_ENABLED" == "true" ]]; then
-        OUTPUT="$OUTPUT ${SEP} B${COLON}$(color_cost $EXTRA_USED $EXTRA_LIMIT)/${GREEN}\$${EXTRA_LIMIT}${RESET}"
-    fi
 fi
 
 # Extract session metadata for cross-machine tracking
@@ -395,6 +390,11 @@ if [[ -n "$OUTPUT" ]]; then
     OUTPUT="$OUTPUT ${SEP} V${COLON}${LIGHT_PURPLE}\$${SESSION_COST_FORMATTED}${RESET}${DIM}/${RESET}${MONTHLY_TOTAL} ${SEP} ${CYCLE_DAYS}"
 else
     OUTPUT="V${COLON}${LIGHT_PURPLE}\$${SESSION_COST_FORMATTED}${RESET}${DIM}/${RESET}${MONTHLY_TOTAL} ${SEP} ${CYCLE_DAYS}"
+fi
+
+# Add overage if enabled (Billing: used/limit)
+if [[ "$EXTRA_ENABLED" == "true" ]]; then
+    OUTPUT="$OUTPUT ${SEP} B${COLON}$(color_cost $EXTRA_USED $EXTRA_LIMIT)/${GREEN}\$${EXTRA_LIMIT}${RESET}"
 fi
 
 # Add context window percentage (from Claude Code session data)
