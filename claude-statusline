@@ -158,18 +158,26 @@ if [[ "$SEVEN_DAY" != "?" ]] && [[ "$SONNET" != "null" ]]; then
         fi
     fi
 
-    # Calculate per-model contributions
+    # Calculate per-model contributions using residual-based approach
+    # Known: Sonnet from API (if available)
+    # Unknown residual: 7d% - Sonnet% = distributed among Opus/Haiku by token ratio
     TOTAL_TOKENS=$((HAIKU_TOKENS + SONNET_TOKENS + OPUS_TOKENS))
     if [[ $TOTAL_TOKENS -gt 0 ]]; then
-        HAIKU_CONTRIB=$(awk "BEGIN {printf \"%.0f\", ($HAIKU_TOKENS / $TOTAL_TOKENS) * $SEVEN_DAY}")
-        OPUS_CONTRIB=$(awk "BEGIN {printf \"%.0f\", ($OPUS_TOKENS / $TOTAL_TOKENS) * $SEVEN_DAY}")
-
-        # Override API values with calculated contributions
-        if [[ "$OPUS" == "null" ]]; then
-            OPUS=$OPUS_CONTRIB
+        # Calculate residual (portion not accounted for by API values)
+        RESIDUAL=$SEVEN_DAY
+        if [[ "$SONNET" != "null" ]] && [[ "$SONNET" != "?" ]]; then
+            RESIDUAL=$(awk "BEGIN {printf \"%.2f\", $SEVEN_DAY - $SONNET}")
         fi
-        # Add Haiku even though it doesn't have an API value
-        HAIKU=$HAIKU_CONTRIB
+
+        # Distribute residual among non-Sonnet models by token ratio
+        NON_SONNET_TOKENS=$((HAIKU_TOKENS + OPUS_TOKENS))
+        if [[ $NON_SONNET_TOKENS -gt 0 ]]; then
+            HAIKU=$(awk "BEGIN {printf \"%.2f\", ($HAIKU_TOKENS / $NON_SONNET_TOKENS) * $RESIDUAL}")
+            OPUS=$(awk "BEGIN {printf \"%.2f\", ($OPUS_TOKENS / $NON_SONNET_TOKENS) * $RESIDUAL}")
+        else
+            HAIKU="0"
+            OPUS="0"
+        fi
     fi
 fi
 
@@ -256,27 +264,50 @@ color_cost() {
 }
 
 # Color coding based on utilization
+# Formats as integer if .00, otherwise shows decimals
 color_usage() {
     local val=$1
     if [[ "$val" == "?" ]] || [[ "$val" == "null" ]]; then
         echo "?"
-    elif (( $(awk "BEGIN {print ($val >= 90)}") )); then
-        echo "${RED}${val}%${RESET}"
-    elif (( $(awk "BEGIN {print ($val >= 70)}") )); then
-        echo "${YELLOW}${val}%${RESET}"
     else
-        echo "${GREEN}${val}%${RESET}"
+        # Check if decimal part is .00
+        local int_part=$(awk "BEGIN {printf \"%.0f\", $val}")
+        local decimal_check=$(awk "BEGIN {if ($val == int($val)) print \"true\"; else print \"false\"}")
+
+        local formatted_val
+        if [[ "$decimal_check" == "true" ]]; then
+            formatted_val="${int_part}%"
+        else
+            formatted_val="${val}%"
+        fi
+
+        if (( $(awk "BEGIN {print ($val >= 90)}") )); then
+            echo "${RED}${formatted_val}${RESET}"
+        elif (( $(awk "BEGIN {print ($val >= 70)}") )); then
+            echo "${YELLOW}${formatted_val}${RESET}"
+        else
+            echo "${GREEN}${formatted_val}${RESET}"
+        fi
     fi
 }
 
 # Color coding for synthetic/calculated percentages (always bright blue, no heatmap)
 # These are contributions to the total, not separate quotas
+# Formats as integer if .00, otherwise shows decimals
 color_usage_synthetic() {
     local val=$1
     if [[ "$val" == "?" ]] || [[ "$val" == "null" ]]; then
         echo "?"
     else
-        echo "${BRIGHT_BLUE}${val}%${RESET}"
+        # Check if decimal part is .00
+        local int_part=$(awk "BEGIN {printf \"%.0f\", $val}")
+        local decimal_check=$(awk "BEGIN {if ($val == int($val)) print \"true\"; else print \"false\"}")
+
+        if [[ "$decimal_check" == "true" ]]; then
+            echo "${BRIGHT_BLUE}${int_part}%${RESET}"
+        else
+            echo "${BRIGHT_BLUE}${val}%${RESET}"
+        fi
     fi
 }
 
