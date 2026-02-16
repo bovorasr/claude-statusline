@@ -482,8 +482,17 @@ else
 fi
 
 DAYS_ELAPSED=$(( (CURRENT_TS - CYCLE_START_TS) / 86400 ))
-# Calculate remaining from total to avoid timestamp rounding issues (DST, etc.)
-TOTAL_CYCLE=$(( (CYCLE_END_TS - CYCLE_START_TS) / 86400 ))
+# Calculate total cycle length using midnight UTC timestamps to avoid DST issues
+# Extract year-month-day and calculate at midnight
+START_DATE=$(echo "$CYCLE_START" | cut -d' ' -f1)
+END_DATE=$(echo "$CYCLE_END" | cut -d' ' -f1)
+if date -u -j -f "%Y-%m-%d" "$START_DATE" +%s >/dev/null 2>&1; then
+    # BSD date (macOS)
+    TOTAL_CYCLE=$(( ($(date -u -j -f "%Y-%m-%d" "$END_DATE" +%s) - $(date -u -j -f "%Y-%m-%d" "$START_DATE" +%s)) / 86400 ))
+else
+    # GNU date (Linux)
+    TOTAL_CYCLE=$(( ($(date -u -d "$END_DATE" +%s) - $(date -u -d "$START_DATE" +%s)) / 86400 ))
+fi
 DAYS_REMAINING=$(( TOTAL_CYCLE - DAYS_ELAPSED ))
 
 # Display: V:$34.58/$160 | C:+11/-17d (Value: session/monthly | Cycle: days elapsed/remaining)
