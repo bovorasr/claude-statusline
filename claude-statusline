@@ -482,7 +482,8 @@ else
 fi
 
 DAYS_ELAPSED=$(( (CURRENT_TS - CYCLE_START_TS) / 86400 ))
-DAYS_REMAINING=$(( (CYCLE_END_TS - CURRENT_TS) / 86400 ))
+# Add 1 to remaining to count partial day as full day (e.g., at 3pm there are still N+1 calendar days left)
+DAYS_REMAINING=$(( (CYCLE_END_TS - CURRENT_TS + 86399) / 86400 ))
 
 # Display: V:$34.58/$160 | C:+11/-17d (Value: session/monthly | Cycle: days elapsed/remaining)
 CYCLE_DAYS="C${COLON}${CYAN}+${DAYS_ELAPSED}${RESET}${DIM}/${RESET}${CYAN}-${DAYS_REMAINING}d${RESET}"
