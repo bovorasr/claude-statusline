@@ -244,6 +244,7 @@ BRIGHT_BLUE=$'\033[38;5;33m'  # For synthetic percentages (neutral/informational
 BRIGHT_CYAN=$'\033[38;5;51m'  # For context percentage
 LIGHT_PURPLE=$'\033[38;5;141m' # For session cost (interesting metric)
 DIM=$'\033[2m'                # For separators
+DARK_GRAY=$'\033[90m'         # For model letters (H/S/O)
 RESET=$'\033[0m'
 
 # Color a dollar amount based on overage limit
@@ -358,8 +359,8 @@ OUTPUT=""
 
 # Only show quota if we have data
 if [[ "$FIVE_HOUR" != "?" ]] || [[ "$SEVEN_DAY" != "?" ]]; then
-    # Format output: percent, cost, time-until-reset
-    OUTPUT="5h${COLON}$(color_usage $FIVE_HOUR)"
+    # Format output: percent, cost, time-until-reset (no 5h:/7d: labels)
+    OUTPUT="$(color_usage $FIVE_HOUR)"
     if [[ -n "${COST_5H:-}" ]]; then
         OUTPUT="${OUTPUT} ${COST_5H}"
     fi
@@ -367,7 +368,7 @@ if [[ "$FIVE_HOUR" != "?" ]] || [[ "$SEVEN_DAY" != "?" ]]; then
         OUTPUT="${OUTPUT} ${FIVE_TIME}"
     fi
 
-    OUTPUT="${OUTPUT} ${SEP} 7d${COLON}$(color_usage $SEVEN_DAY)"
+    OUTPUT="${OUTPUT} ${SEP} $(color_usage $SEVEN_DAY)"
     if [[ -n "${COST_7D:-}" ]]; then
         OUTPUT="${OUTPUT} ${COST_7D}"
     fi
@@ -375,39 +376,41 @@ if [[ "$FIVE_HOUR" != "?" ]] || [[ "$SEVEN_DAY" != "?" ]]; then
         OUTPUT="${OUTPUT} ${SEVEN_TIME}"
     fi
 
-    # Add per-model breakdown: S shows % (from API), O/H show tokens only (for hidden limit inference)
-    # Format: 7d:18% = S:11% + O:245K
+    # Add per-model breakdown: value-first format e.g. 1%S + 245KO
     # Order: H, S, O
     MODELS_OUTPUT=""
     FIRST_MODEL=true
 
-    # Haiku: show tokens only (no synthetic %)
+    # Haiku: tokens then dark-gray H
     if [[ $HAIKU_TOKENS -gt 0 ]]; then
+        local hval="${BRIGHT_BLUE}$(format_tokens $HAIKU_TOKENS)${RESET}${DARK_GRAY}H${RESET}"
         if [[ "$FIRST_MODEL" == "true" ]]; then
-            MODELS_OUTPUT="H${COLON}${BRIGHT_BLUE}$(format_tokens $HAIKU_TOKENS)${RESET}"
+            MODELS_OUTPUT="$hval"
             FIRST_MODEL=false
         else
-            MODELS_OUTPUT="$MODELS_OUTPUT ${PLUS} H${COLON}${BRIGHT_BLUE}$(format_tokens $HAIKU_TOKENS)${RESET}"
+            MODELS_OUTPUT="$MODELS_OUTPUT ${PLUS} $hval"
         fi
     fi
 
-    # Sonnet: show % only (from API, no tokens)
+    # Sonnet: % then dark-gray S
     if [[ "$SONNET" != "null" ]] && [[ "$SONNET" != "?" ]]; then
+        local sval="$(color_usage $SONNET)${DARK_GRAY}S${RESET}"
         if [[ "$FIRST_MODEL" == "true" ]]; then
-            MODELS_OUTPUT="S${COLON}$(color_usage $SONNET)"
+            MODELS_OUTPUT="$sval"
             FIRST_MODEL=false
         else
-            MODELS_OUTPUT="$MODELS_OUTPUT ${PLUS} S${COLON}$(color_usage $SONNET)"
+            MODELS_OUTPUT="$MODELS_OUTPUT ${PLUS} $sval"
         fi
     fi
 
-    # Opus: show tokens only (no synthetic %)
+    # Opus: tokens then dark-gray O
     if [[ $OPUS_TOKENS -gt 0 ]]; then
+        local oval="${BRIGHT_BLUE}$(format_tokens $OPUS_TOKENS)${RESET}${DARK_GRAY}O${RESET}"
         if [[ "$FIRST_MODEL" == "true" ]]; then
-            MODELS_OUTPUT="O${COLON}${BRIGHT_BLUE}$(format_tokens $OPUS_TOKENS)${RESET}"
+            MODELS_OUTPUT="$oval"
             FIRST_MODEL=false
         else
-            MODELS_OUTPUT="$MODELS_OUTPUT ${PLUS} O${COLON}${BRIGHT_BLUE}$(format_tokens $OPUS_TOKENS)${RESET}"
+            MODELS_OUTPUT="$MODELS_OUTPUT ${PLUS} $oval"
         fi
     fi
 
