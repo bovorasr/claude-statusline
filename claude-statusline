@@ -549,9 +549,8 @@ fi
 
 # Add context window percentage (from Claude Code session data)
 CONTEXT_PCT=$(echo "$INPUT" | jq -r '.context_window.used_percentage // 0 | round' 2>/dev/null || echo "0")
-OUTPUT="$OUTPUT ${SEP} ${BRIGHT_CYAN}${CONTEXT_PCT}%${RESET}"
 
-# Add model information
+# Add model information with context % appended: | opusplan/Sonnet 4.6 59%
 # Model in INPUT is an object with {id, display_name}
 MODEL_NAME=$(echo "$INPUT" | jq -r '
     if (.model | type) == "string" then .model
@@ -561,19 +560,20 @@ MODEL_NAME=$(echo "$INPUT" | jq -r '
 ' 2>/dev/null || echo "")
 MODEL_PLAN=$(jq -r '.model // ""' ~/.claude/settings.json 2>/dev/null)
 
-# Build model display - always show setting/actual to detect drift
+# Build model display with dark cyan names, dim slash
 MODEL_DISPLAY=""
 if [[ -n "$MODEL_NAME" ]] && [[ -n "$MODEL_PLAN" ]] && [[ "$MODEL_PLAN" != "null" ]]; then
-    # Always show both to detect drift
-    MODEL_DISPLAY="${MODEL_PLAN}/${MODEL_NAME}"
+    MODEL_DISPLAY="${CYAN}${MODEL_PLAN}${RESET}${DIM}/${RESET}${CYAN}${MODEL_NAME}${RESET}"
 elif [[ -n "$MODEL_NAME" ]]; then
-    MODEL_DISPLAY="${MODEL_NAME}"
+    MODEL_DISPLAY="${CYAN}${MODEL_NAME}${RESET}"
 elif [[ -n "$MODEL_PLAN" ]]; then
-    MODEL_DISPLAY="${MODEL_PLAN}"
+    MODEL_DISPLAY="${CYAN}${MODEL_PLAN}${RESET}"
 fi
 
 if [[ -n "$MODEL_DISPLAY" ]]; then
-    OUTPUT="$OUTPUT ${SEP} ${MODEL_DISPLAY}"
+    OUTPUT="$OUTPUT ${SEP} ${MODEL_DISPLAY} ${BRIGHT_CYAN}${CONTEXT_PCT}%${RESET}"
+else
+    OUTPUT="$OUTPUT ${SEP} ${BRIGHT_CYAN}${CONTEXT_PCT}%${RESET}"
 fi
 
 echo "$OUTPUT"
