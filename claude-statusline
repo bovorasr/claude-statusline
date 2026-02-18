@@ -327,6 +327,14 @@ format_tokens() {
 FIVE_TIME=$(time_until "$FIVE_RESET")
 SEVEN_TIME=$(time_until "$SEVEN_RESET")
 
+# Fetch windowed costs from Firebase (60s cached)
+COST_5H=""
+COST_7D=""
+if [[ -n "${CLAUDE_FIREBASE_URL:-}" ]] && command -v claude-session-sync >/dev/null 2>&1; then
+    COST_5H=$(claude-session-sync cost-read --window 5h --color 2>/dev/null || echo "")
+    COST_7D=$(claude-session-sync cost-read --window 7d --color 2>/dev/null || echo "")
+fi
+
 # Dim separators and operators
 SEP="${DIM}|${RESET}"
 COLON="${DIM}:${RESET}"
@@ -343,10 +351,16 @@ if [[ "$FIVE_HOUR" != "?" ]] || [[ "$SEVEN_DAY" != "?" ]]; then
     if [[ -n "$FIVE_TIME" ]]; then
         OUTPUT="${OUTPUT}~${FIVE_TIME}"
     fi
+    if [[ -n "${COST_5H:-}" ]]; then
+        OUTPUT="${OUTPUT} (${COST_5H})"
+    fi
 
     OUTPUT="${OUTPUT} ${SEP} 7d${COLON}$(color_usage $SEVEN_DAY)"
     if [[ -n "$SEVEN_TIME" ]]; then
         OUTPUT="${OUTPUT}~${SEVEN_TIME}"
+    fi
+    if [[ -n "${COST_7D:-}" ]]; then
+        OUTPUT="${OUTPUT} (${COST_7D})"
     fi
 
     # Add per-model breakdown: S shows % (from API), O/H show tokens only (for hidden limit inference)
@@ -416,6 +430,7 @@ if [[ -n "$SESSION_ID" ]] && command -v claude-session-sync >/dev/null 2>&1; the
             claude-session-sync prune 2>/dev/null || true
             claude-session-sync token-sync 2>/dev/null || true
             claude-session-sync token-prune 2>/dev/null || true
+            claude-session-sync cost-prune 2>/dev/null || true
         else
             # Existing session: just sync if it's been 10s
             claude-session-sync sync 2>/dev/null || true

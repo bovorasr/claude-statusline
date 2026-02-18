@@ -18,8 +18,13 @@ TOKEN_SYNC_TS_FILE="/tmp/claude-token-sync-ts"
 TOKEN_READ_CACHE_FILE="/tmp/claude-token-read-cache"
 TOKEN_READ_CACHE_TTL=60  # seconds
 
-# Ensure WAL directory exists
+COST_DELTA_DIR="/tmp/claude-cost-delta-pending"
+COST_DELTAS_CACHE="/tmp/claude-cost-deltas-cache"
+COST_DELTAS_CACHE_TTL=60  # seconds
+
+# Ensure WAL and cost delta directories exist
 mkdir -p "$WAL_DIR"
+mkdir -p "$COST_DELTA_DIR"
 
 usage() {
     cat <<EOF
@@ -53,6 +58,14 @@ Commands:
   token-prune [--days N]
       Delete daily token stats older than N days from Firebase (default: 14)
 
+  cost-read --window 5h|7d [--color]
+      Sum cost deltas within time window from Firebase cost-deltas
+      Output format: \$2.50 (empty if zero)
+      Raw data cached for 60s; also includes unsynced local pending deltas
+
+  cost-prune [--days N]
+      Delete cost-delta date keys older than N days from Firebase (default: 14)
+
 Environment variables required:
   CLAUDE_FIREBASE_URL     - Firebase RTDB URL (e.g., https://your-db.firebaseio.com)
   CLAUDE_FIREBASE_SECRET  - Firebase auth secret
@@ -65,6 +78,9 @@ Examples:
   claude-session-sync token-sync
   claude-session-sync token-read --days 7
   claude-session-sync token-prune --days 14
+  claude-session-sync cost-read --window 5h --color
+  claude-session-sync cost-read --window 7d
+  claude-session-sync cost-prune --days 14
 EOF
     exit 1
 }
@@ -85,8 +101,24 @@ cmd_wal_write() {
     local wal_file="$WAL_DIR/$session_id"
     local machine=$(hostname -s)
     local ts=$(date +%s)
+    local date_str=$(date -u +%Y-%m-%d)
 
-    # Write JSON to WAL file
+    # Read previous cost from existing WAL to compute delta
+    local prev_cost=0
+    if [[ -f "$wal_file" ]]; then
+        prev_cost=$(jq -r '.cost // 0' "$wal_file" 2>/dev/null || echo "0")
+    fi
+
+    # Compute delta; append to pending file if cost increased meaningfully
+    local delta
+    delta=$(awk "BEGIN {printf \"%.10f\", $cost - $prev_cost}")
+    if (( $(awk "BEGIN {print ($delta > 0.001)}") )); then
+        local pending_file="$COST_DELTA_DIR/${session_id}.pending"
+        local entry="{\"d\":${delta},\"t\":${ts},\"date\":\"${date_str}\",\"m\":\"${machine}\"}"
+        echo "$entry" >> "$pending_file"
+    fi
+
+    # Write JSON to WAL file (cumulative cost for /sessions/ path)
     cat > "$wal_file" <<EOF
 {
   "cost": $cost,
@@ -135,6 +167,69 @@ cmd_sync() {
             -d "$data" \
             "${CLAUDE_FIREBASE_URL}/sessions/${session_id}.json?auth=${CLAUDE_FIREBASE_SECRET}" \
             >/dev/null 2>&1 || true  # Ignore errors (offline, etc.)
+    done
+
+    # Sync cost delta pending files to Firebase via multi-path PATCH
+    for pending_file in "$COST_DELTA_DIR"/*.pending; do
+        if [[ ! -f "$pending_file" ]]; then
+            continue
+        fi
+
+        local session_id
+        session_id=$(basename "$pending_file" .pending)
+
+        # Read all JSONL entries as an array
+        local entries
+        entries=$(jq -s '.' "$pending_file" 2>/dev/null || echo "[]")
+
+        # Get unique dates spanned by this session's pending entries
+        local dates
+        dates=$(echo "$entries" | jq -r '.[].date' 2>/dev/null | sort -u || echo "")
+
+        local session_ok=true
+        while IFS= read -r date_key; do
+            if [[ -z "$date_key" ]]; then
+                continue
+            fi
+
+            # Build multi-path PATCH payload for this date
+            # Keys use Firebase path format: cost-deltas/{date}/{session}/d/{ts}
+            local patch_payload
+            patch_payload=$(echo "$entries" | jq -c \
+                --arg date "$date_key" \
+                --arg session "$session_id" '
+                map(select(.date == $date)) |
+                if length == 0 then {}
+                else
+                    reduce .[] as $e (
+                        {};
+                        . + {("cost-deltas/" + $date + "/" + $session + "/m"): $e.m,
+                             ("cost-deltas/" + $date + "/" + $session + "/d/" + ($e.t | tostring)): $e.d}
+                    )
+                end
+            ' 2>/dev/null || echo "{}")
+
+            if [[ "$patch_payload" == "{}" ]]; then
+                continue
+            fi
+
+            local http_code
+            http_code=$(curl -s -o /dev/null -w "%{http_code}" -X PATCH \
+                --connect-timeout 2 \
+                --max-time 3 \
+                -H "Content-Type: application/json" \
+                -d "$patch_payload" \
+                "${CLAUDE_FIREBASE_URL}.json?auth=${CLAUDE_FIREBASE_SECRET}" 2>/dev/null || echo "0")
+
+            if [[ "$http_code" != "200" ]]; then
+                session_ok=false
+            fi
+        done <<< "$dates"
+
+        # Delete pending file only if all dates synced successfully
+        if [[ "$session_ok" == "true" ]]; then
+            rm -f "$pending_file"
+        fi
     done
 
     # Update sync timestamp
@@ -270,6 +365,171 @@ cmd_prune() {
                     >/dev/null 2>&1 || true
             fi
         done <<< "$old_sessions"
+    fi
+}
+
+# cost-read: Read windowed cost from Firebase cost-deltas
+cmd_cost_read() {
+    local window="5h"
+    local use_color=false
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --window)
+                window=$2
+                shift 2
+                ;;
+            --color)
+                use_color=true
+                shift
+                ;;
+            *)
+                shift
+                ;;
+        esac
+    done
+
+    # Convert window to seconds
+    local window_seconds
+    case "$window" in
+        5h) window_seconds=$((5 * 3600)) ;;
+        7d) window_seconds=$((7 * 86400)) ;;
+        *)
+            echo "Error: Unknown window: $window (use 5h or 7d)" >&2
+            exit 1
+            ;;
+    esac
+
+    local now=$(date +%s)
+    local cutoff=$((now - window_seconds))
+
+    # Check raw data cache freshness
+    local raw_data="{}"
+    if [[ -f "$COST_DELTAS_CACHE" ]]; then
+        local cache_mtime
+        if stat -f %m "$COST_DELTAS_CACHE" >/dev/null 2>&1; then
+            cache_mtime=$(stat -f %m "$COST_DELTAS_CACHE")
+        else
+            cache_mtime=$(stat -c %Y "$COST_DELTAS_CACHE")
+        fi
+        local cache_age=$((now - cache_mtime))
+        if [[ $cache_age -lt $COST_DELTAS_CACHE_TTL ]]; then
+            raw_data=$(cat "$COST_DELTAS_CACHE")
+        fi
+    fi
+
+    # Fetch fresh data if cache is stale or missing
+    if [[ "$raw_data" == "{}" ]] || [[ "$raw_data" == "null" ]]; then
+        check_credentials
+        raw_data=$(curl -s -X GET \
+            --connect-timeout 2 \
+            --max-time 5 \
+            "${CLAUDE_FIREBASE_URL}/cost-deltas.json?auth=${CLAUDE_FIREBASE_SECRET}" 2>/dev/null || echo "{}")
+
+        # Cache raw data if valid
+        if [[ "$raw_data" != "{}" ]] && [[ "$raw_data" != "null" ]] && [[ -n "$raw_data" ]]; then
+            echo "$raw_data" > "$COST_DELTAS_CACHE"
+        fi
+    fi
+
+    # Sum deltas within window from Firebase data
+    local firebase_total
+    firebase_total=$(echo "$raw_data" | jq --argjson cutoff "$cutoff" '
+        if . == null or . == {} then 0
+        else
+            [to_entries[] |  # dates
+             .value | to_entries[] |  # sessions
+             .value.d // {} | to_entries[] |  # timestamps
+             select((.key | tonumber) >= $cutoff) |
+             .value] |
+            add // 0
+        end
+    ' 2>/dev/null || echo "0")
+
+    # Also sum unsynced local pending deltas within window
+    local pending_total=0
+    for pending_file in "$COST_DELTA_DIR"/*.pending; do
+        if [[ ! -f "$pending_file" ]]; then
+            continue
+        fi
+        local file_total
+        file_total=$(jq -s --argjson cutoff "$cutoff" '
+            map(select(.t >= $cutoff)) |
+            map(.d) |
+            add // 0
+        ' "$pending_file" 2>/dev/null || echo "0")
+        pending_total=$(awk "BEGIN {printf \"%.10f\", $pending_total + $file_total}")
+    done
+
+    local total
+    total=$(awk "BEGIN {printf \"%.2f\", $firebase_total + $pending_total}")
+
+    # Return empty if zero (no need to show "$0.00" in statusline)
+    if (( $(awk "BEGIN {print ($total < 0.001)}") )); then
+        return 0
+    fi
+
+    # Format output
+    if [[ "$use_color" == "true" ]]; then
+        local LIGHT_PURPLE=$'\033[38;5;141m'
+        local RESET=$'\033[0m'
+        echo "${LIGHT_PURPLE}\$${total}${RESET}"
+    else
+        echo "\$${total}"
+    fi
+}
+
+# cost-prune: Delete old cost-delta date keys from Firebase
+cmd_cost_prune() {
+    local days=14
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --days)
+                days=$2
+                shift 2
+                ;;
+            *)
+                shift
+                ;;
+        esac
+    done
+
+    check_credentials
+
+    # Calculate cutoff date
+    local cutoff_date
+    if date -v-${days}d +%Y-%m-%d >/dev/null 2>&1; then
+        cutoff_date=$(date -v-${days}d +%Y-%m-%d)
+    else
+        cutoff_date=$(date -d "${days} days ago" +%Y-%m-%d)
+    fi
+
+    # Fetch shallow key list from Firebase (keys only, no data)
+    local date_keys
+    date_keys=$(curl -s -X GET \
+        --connect-timeout 2 \
+        --max-time 5 \
+        "${CLAUDE_FIREBASE_URL}/cost-deltas.json?shallow=true&auth=${CLAUDE_FIREBASE_SECRET}" 2>/dev/null || echo "{}")
+
+    # Find dates older than cutoff
+    local old_dates
+    old_dates=$(echo "$date_keys" | jq -r --arg cutoff "$cutoff_date" '
+        to_entries |
+        map(select(.key < $cutoff)) |
+        .[].key
+    ' 2>/dev/null || echo "")
+
+    if [[ -n "$old_dates" ]]; then
+        while IFS= read -r date; do
+            if [[ -n "$date" ]]; then
+                curl -s -X DELETE \
+                    --connect-timeout 2 \
+                    --max-time 3 \
+                    "${CLAUDE_FIREBASE_URL}/cost-deltas/${date}.json?auth=${CLAUDE_FIREBASE_SECRET}" \
+                    >/dev/null 2>&1 || true
+            fi
+        done <<< "$old_dates"
     fi
 }
 
@@ -498,6 +758,12 @@ case "$COMMAND" in
         ;;
     token-prune)
         cmd_token_prune "$@"
+        ;;
+    cost-read)
+        cmd_cost_read "$@"
+        ;;
+    cost-prune)
+        cmd_cost_prune "$@"
         ;;
     *)
         echo "Error: Unknown command: $COMMAND" >&2
