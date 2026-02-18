@@ -116,6 +116,8 @@ cmd_wal_write() {
         local pending_file="$COST_DELTA_DIR/${session_id}.pending"
         local entry="{\"d\":${delta},\"t\":${ts},\"date\":\"${date_str}\",\"m\":\"${machine}\"}"
         echo "$entry" >> "$pending_file"
+        # Write last query cost for statusline display (session_id + delta)
+        echo "$session_id $delta" > "/tmp/claude-last-query-cost"
     fi
 
     # Write JSON to WAL file (cumulative cost for /sessions/ path)
@@ -368,6 +370,18 @@ cmd_prune() {
     fi
 }
 
+# Format a dollar amount: cents symbol (postfix) for amounts < $1
+format_money() {
+    local amount=$1
+    if (( $(awk "BEGIN {print ($amount < 1.0)}") )); then
+        local cents
+        cents=$(awk "BEGIN {printf \"%.0f\", $amount * 100}")
+        printf "%s¢" "$cents"
+    else
+        printf "\$%.2f" "$amount"
+    fi
+}
+
 # cost-read: Read windowed cost from Firebase cost-deltas
 cmd_cost_read() {
     local window="5h"
@@ -470,12 +484,14 @@ cmd_cost_read() {
     fi
 
     # Format output
+    local formatted
+    formatted=$(format_money "$total")
     if [[ "$use_color" == "true" ]]; then
         local LIGHT_PURPLE=$'\033[38;5;141m'
         local RESET=$'\033[0m'
-        echo "${LIGHT_PURPLE}\$${total}${RESET}"
+        echo "${LIGHT_PURPLE}${formatted}${RESET}"
     else
-        echo "\$${total}"
+        echo "$formatted"
     fi
 }
 

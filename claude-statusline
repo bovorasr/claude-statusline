@@ -311,6 +311,18 @@ color_usage_synthetic() {
     fi
 }
 
+# Format dollar amount: cents symbol (postfix) for amounts < $1
+format_money() {
+    local amount=$1
+    if (( $(awk "BEGIN {print ($amount < 1.0)}") )); then
+        local cents
+        cents=$(awk "BEGIN {printf \"%.0f\", $amount * 100}")
+        printf "%s¢" "$cents"
+    else
+        printf "\$%.2f" "$amount"
+    fi
+}
+
 # Format token count as human-readable
 format_tokens() {
     local tokens=$1
@@ -352,7 +364,7 @@ if [[ "$FIVE_HOUR" != "?" ]] || [[ "$SEVEN_DAY" != "?" ]]; then
         OUTPUT="${OUTPUT}~${FIVE_TIME}"
     fi
     if [[ -n "${COST_5H:-}" ]]; then
-        OUTPUT="${OUTPUT} (${COST_5H})"
+        OUTPUT="${OUTPUT} ${COST_5H}"
     fi
 
     OUTPUT="${OUTPUT} ${SEP} 7d${COLON}$(color_usage $SEVEN_DAY)"
@@ -360,7 +372,7 @@ if [[ "$FIVE_HOUR" != "?" ]] || [[ "$SEVEN_DAY" != "?" ]]; then
         OUTPUT="${OUTPUT}~${SEVEN_TIME}"
     fi
     if [[ -n "${COST_7D:-}" ]]; then
-        OUTPUT="${OUTPUT} (${COST_7D})"
+        OUTPUT="${OUTPUT} ${COST_7D}"
     fi
 
     # Add per-model breakdown: S shows % (from API), O/H show tokens only (for hidden limit inference)
@@ -408,7 +420,8 @@ fi
 # Extract session metadata for cross-machine tracking
 SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // ""' 2>/dev/null || echo "")
 SESSION_COST=$(echo "$INPUT" | jq -r '.cost.total_cost_usd // .usage.total_cost_usd // .totalCost // .total_cost_usd // 0' 2>/dev/null || echo "0")
-SESSION_COST_FORMATTED=$(printf "%.2f" "$SESSION_COST")
+SESSION_COST_FORMATTED=$(format_money "$SESSION_COST")
+QUERY_COST=""
 
 # WAL write: Capture session cost locally (instant, no network)
 if [[ -n "$SESSION_ID" ]] && command -v claude-session-sync >/dev/null 2>&1; then
@@ -421,6 +434,14 @@ if [[ -n "$SESSION_ID" ]] && command -v claude-session-sync >/dev/null 2>&1; the
 
     # Write to WAL (every invocation, instant)
     claude-session-sync wal-write "$SESSION_ID" "$SESSION_COST" 2>/dev/null || true
+
+    # Read last query cost (written by wal-write above when cost increased)
+    if [[ -f "/tmp/claude-last-query-cost" ]]; then
+        read -r _qc_session _qc_cost < "/tmp/claude-last-query-cost" 2>/dev/null || true
+        if [[ "${_qc_session:-}" == "$SESSION_ID" ]]; then
+            QUERY_COST=$(format_money "${_qc_cost:-0}" 2>/dev/null || echo "")
+        fi
+    fi
 
     # Sync check (backgrounded, throttled to every 10s)
     (
@@ -510,12 +531,16 @@ else
 fi
 DAYS_REMAINING=$(( TOTAL_CYCLE - DAYS_ELAPSED ))
 
-# Display: V:$34.58/$160 | C:+11/-17d (Value: session/monthly | Cycle: days elapsed/remaining)
+# Display: V:25¢/$5.75/$526 | C:+11/-17d (query/session/monthly | Cycle: elapsed/remaining)
 CYCLE_DAYS="C${COLON}${CYAN}+${DAYS_ELAPSED}${RESET}${DIM}/${RESET}${CYAN}-${DAYS_REMAINING}d${RESET}"
+V_VALUE="${LIGHT_PURPLE}${SESSION_COST_FORMATTED}${RESET}${DIM}/${RESET}${MONTHLY_TOTAL}"
+if [[ -n "${QUERY_COST:-}" ]]; then
+    V_VALUE="${LIGHT_PURPLE}${QUERY_COST}${RESET}${DIM}/${RESET}${V_VALUE}"
+fi
 if [[ -n "$OUTPUT" ]]; then
-    OUTPUT="$OUTPUT ${SEP} V${COLON}${LIGHT_PURPLE}\$${SESSION_COST_FORMATTED}${RESET}${DIM}/${RESET}${MONTHLY_TOTAL} ${SEP} ${CYCLE_DAYS}"
+    OUTPUT="$OUTPUT ${SEP} V${COLON}${V_VALUE} ${SEP} ${CYCLE_DAYS}"
 else
-    OUTPUT="V${COLON}${LIGHT_PURPLE}\$${SESSION_COST_FORMATTED}${RESET}${DIM}/${RESET}${MONTHLY_TOTAL} ${SEP} ${CYCLE_DAYS}"
+    OUTPUT="V${COLON}${V_VALUE} ${SEP} ${CYCLE_DAYS}"
 fi
 
 # Add overage if enabled (Billing: used/limit)
