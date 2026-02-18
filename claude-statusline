@@ -383,7 +383,7 @@ if [[ "$FIVE_HOUR" != "?" ]] || [[ "$SEVEN_DAY" != "?" ]]; then
 
     # Haiku: tokens then dark-gray H
     if [[ $HAIKU_TOKENS -gt 0 ]]; then
-        local hval="${BRIGHT_BLUE}$(format_tokens $HAIKU_TOKENS)${RESET}${DARK_GRAY}H${RESET}"
+        hval="${BRIGHT_BLUE}$(format_tokens $HAIKU_TOKENS)${RESET}${DARK_GRAY}H${RESET}"
         if [[ "$FIRST_MODEL" == "true" ]]; then
             MODELS_OUTPUT="$hval"
             FIRST_MODEL=false
@@ -394,7 +394,7 @@ if [[ "$FIVE_HOUR" != "?" ]] || [[ "$SEVEN_DAY" != "?" ]]; then
 
     # Sonnet: % then dark-gray S
     if [[ "$SONNET" != "null" ]] && [[ "$SONNET" != "?" ]]; then
-        local sval="$(color_usage $SONNET)${DARK_GRAY}S${RESET}"
+        sval="$(color_usage $SONNET)${DARK_GRAY}S${RESET}"
         if [[ "$FIRST_MODEL" == "true" ]]; then
             MODELS_OUTPUT="$sval"
             FIRST_MODEL=false
@@ -405,7 +405,7 @@ if [[ "$FIVE_HOUR" != "?" ]] || [[ "$SEVEN_DAY" != "?" ]]; then
 
     # Opus: tokens then dark-gray O
     if [[ $OPUS_TOKENS -gt 0 ]]; then
-        local oval="${BRIGHT_BLUE}$(format_tokens $OPUS_TOKENS)${RESET}${DARK_GRAY}O${RESET}"
+        oval="${BRIGHT_BLUE}$(format_tokens $OPUS_TOKENS)${RESET}${DARK_GRAY}O${RESET}"
         if [[ "$FIRST_MODEL" == "true" ]]; then
             MODELS_OUTPUT="$oval"
             FIRST_MODEL=false
