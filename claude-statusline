@@ -393,7 +393,7 @@ fi
 
 # Extract session metadata for cross-machine tracking
 SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // ""' 2>/dev/null || echo "")
-SESSION_COST=$(echo "$INPUT" | jq -r '.cost.total_cost_usd // 0' 2>/dev/null || echo "0")
+SESSION_COST=$(echo "$INPUT" | jq -r '.cost.total_cost_usd // .usage.total_cost_usd // .totalCost // .total_cost_usd // 0' 2>/dev/null || echo "0")
 SESSION_COST_FORMATTED=$(printf "%.2f" "$SESSION_COST")
 
 # WAL write: Capture session cost locally (instant, no network)
@@ -514,7 +514,12 @@ OUTPUT="$OUTPUT ${SEP} X${COLON}${BRIGHT_CYAN}${CONTEXT_PCT}%${RESET}"
 
 # Add model information
 # Model in INPUT is an object with {id, display_name}
-MODEL_NAME=$(echo "$INPUT" | jq -r '.model.display_name // .model.id // .model // ""' 2>/dev/null)
+MODEL_NAME=$(echo "$INPUT" | jq -r '
+    if (.model | type) == "string" then .model
+    elif (.model | type) == "object" then (.model.display_name // .model.name // .model.id // "")
+    else ""
+    end
+' 2>/dev/null || echo "")
 MODEL_PLAN=$(jq -r '.model // ""' ~/.claude/settings.json 2>/dev/null)
 
 # Build model display - always show setting/actual to detect drift
