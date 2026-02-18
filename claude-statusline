@@ -531,21 +531,20 @@ else
 fi
 DAYS_REMAINING=$(( TOTAL_CYCLE - DAYS_ELAPSED ))
 
-# Display: C:+11/-17d | V:25¢/$5.75/$526 (Cycle: elapsed/remaining | query/session/monthly)
+# Billing period block: +6/-22d 25¢/$5.75/$536 [$0/$50] (all in one pipe group)
 CYCLE_DAYS="${CYAN}+${DAYS_ELAPSED}${RESET}${DIM}/${RESET}${CYAN}-${DAYS_REMAINING}d${RESET}"
 V_VALUE="${LIGHT_PURPLE}${SESSION_COST_FORMATTED}${RESET}${DIM}/${RESET}${MONTHLY_TOTAL}"
 if [[ -n "${QUERY_COST:-}" ]]; then
     V_VALUE="${LIGHT_PURPLE}${QUERY_COST}${RESET}${DIM}/${RESET}${V_VALUE}"
 fi
-if [[ -n "$OUTPUT" ]]; then
-    OUTPUT="$OUTPUT ${SEP} ${CYCLE_DAYS} ${SEP} ${V_VALUE}"
-else
-    OUTPUT="${CYCLE_DAYS} ${SEP} ${V_VALUE}"
-fi
-
-# Add overage if enabled (Billing: used/limit)
+BILLING_BLOCK="${CYCLE_DAYS} ${V_VALUE}"
 if [[ "$EXTRA_ENABLED" == "true" ]]; then
-    OUTPUT="$OUTPUT ${SEP} $(color_cost $EXTRA_USED $EXTRA_LIMIT)/${GREEN}\$${EXTRA_LIMIT}${RESET}"
+    BILLING_BLOCK="${BILLING_BLOCK} $(color_cost $EXTRA_USED $EXTRA_LIMIT)/${GREEN}\$${EXTRA_LIMIT}${RESET}"
+fi
+if [[ -n "$OUTPUT" ]]; then
+    OUTPUT="$OUTPUT ${SEP} ${BILLING_BLOCK}"
+else
+    OUTPUT="${BILLING_BLOCK}"
 fi
 
 # Add context window percentage (from Claude Code session data)
