@@ -358,21 +358,21 @@ OUTPUT=""
 
 # Only show quota if we have data
 if [[ "$FIVE_HOUR" != "?" ]] || [[ "$SEVEN_DAY" != "?" ]]; then
-    # Format output with times
+    # Format output: percent, cost, time-until-reset
     OUTPUT="5h${COLON}$(color_usage $FIVE_HOUR)"
-    if [[ -n "$FIVE_TIME" ]]; then
-        OUTPUT="${OUTPUT}~${FIVE_TIME}"
-    fi
     if [[ -n "${COST_5H:-}" ]]; then
         OUTPUT="${OUTPUT} ${COST_5H}"
     fi
+    if [[ -n "$FIVE_TIME" ]]; then
+        OUTPUT="${OUTPUT} ${FIVE_TIME}"
+    fi
 
     OUTPUT="${OUTPUT} ${SEP} 7d${COLON}$(color_usage $SEVEN_DAY)"
-    if [[ -n "$SEVEN_TIME" ]]; then
-        OUTPUT="${OUTPUT}~${SEVEN_TIME}"
-    fi
     if [[ -n "${COST_7D:-}" ]]; then
         OUTPUT="${OUTPUT} ${COST_7D}"
+    fi
+    if [[ -n "$SEVEN_TIME" ]]; then
+        OUTPUT="${OUTPUT} ${SEVEN_TIME}"
     fi
 
     # Add per-model breakdown: S shows % (from API), O/H show tokens only (for hidden limit inference)
@@ -531,16 +531,16 @@ else
 fi
 DAYS_REMAINING=$(( TOTAL_CYCLE - DAYS_ELAPSED ))
 
-# Display: V:25¢/$5.75/$526 | C:+11/-17d (query/session/monthly | Cycle: elapsed/remaining)
+# Display: C:+11/-17d | V:25¢/$5.75/$526 (Cycle: elapsed/remaining | query/session/monthly)
 CYCLE_DAYS="C${COLON}${CYAN}+${DAYS_ELAPSED}${RESET}${DIM}/${RESET}${CYAN}-${DAYS_REMAINING}d${RESET}"
 V_VALUE="${LIGHT_PURPLE}${SESSION_COST_FORMATTED}${RESET}${DIM}/${RESET}${MONTHLY_TOTAL}"
 if [[ -n "${QUERY_COST:-}" ]]; then
     V_VALUE="${LIGHT_PURPLE}${QUERY_COST}${RESET}${DIM}/${RESET}${V_VALUE}"
 fi
 if [[ -n "$OUTPUT" ]]; then
-    OUTPUT="$OUTPUT ${SEP} V${COLON}${V_VALUE} ${SEP} ${CYCLE_DAYS}"
+    OUTPUT="$OUTPUT ${SEP} ${CYCLE_DAYS} ${SEP} V${COLON}${V_VALUE}"
 else
-    OUTPUT="V${COLON}${V_VALUE} ${SEP} ${CYCLE_DAYS}"
+    OUTPUT="${CYCLE_DAYS} ${SEP} V${COLON}${V_VALUE}"
 fi
 
 # Add overage if enabled (Billing: used/limit)
