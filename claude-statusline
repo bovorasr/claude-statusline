@@ -381,9 +381,9 @@ if [[ "$FIVE_HOUR" != "?" ]] || [[ "$SEVEN_DAY" != "?" ]]; then
     MODELS_OUTPUT=""
     FIRST_MODEL=true
 
-    # Haiku: tokens then dark-gray H
+    # Haiku: dark-gray H then tokens
     if [[ $HAIKU_TOKENS -gt 0 ]]; then
-        hval="${BRIGHT_BLUE}$(format_tokens $HAIKU_TOKENS)${RESET}${DARK_GRAY}H${RESET}"
+        hval="${DARK_GRAY}H${RESET}${BRIGHT_BLUE}$(format_tokens $HAIKU_TOKENS)${RESET}"
         if [[ "$FIRST_MODEL" == "true" ]]; then
             MODELS_OUTPUT="$hval"
             FIRST_MODEL=false
@@ -392,9 +392,9 @@ if [[ "$FIVE_HOUR" != "?" ]] || [[ "$SEVEN_DAY" != "?" ]]; then
         fi
     fi
 
-    # Sonnet: % then dark-gray S
+    # Sonnet: dark-gray S then %
     if [[ "$SONNET" != "null" ]] && [[ "$SONNET" != "?" ]]; then
-        sval="$(color_usage $SONNET)${DARK_GRAY}S${RESET}"
+        sval="${DARK_GRAY}S${RESET}$(color_usage $SONNET)"
         if [[ "$FIRST_MODEL" == "true" ]]; then
             MODELS_OUTPUT="$sval"
             FIRST_MODEL=false
@@ -403,9 +403,9 @@ if [[ "$FIVE_HOUR" != "?" ]] || [[ "$SEVEN_DAY" != "?" ]]; then
         fi
     fi
 
-    # Opus: tokens then dark-gray O
+    # Opus: dark-gray O then tokens
     if [[ $OPUS_TOKENS -gt 0 ]]; then
-        oval="${BRIGHT_BLUE}$(format_tokens $OPUS_TOKENS)${RESET}${DARK_GRAY}O${RESET}"
+        oval="${DARK_GRAY}O${RESET}${BRIGHT_BLUE}$(format_tokens $OPUS_TOKENS)${RESET}"
         if [[ "$FIRST_MODEL" == "true" ]]; then
             MODELS_OUTPUT="$oval"
             FIRST_MODEL=false
@@ -542,7 +542,7 @@ if [[ -n "${QUERY_COST:-}" ]]; then
 fi
 BILLING_BLOCK="${CYCLE_DAYS} ${V_VALUE}"
 if [[ "$EXTRA_ENABLED" == "true" ]]; then
-    BILLING_BLOCK="${BILLING_BLOCK} $(color_cost $EXTRA_USED $EXTRA_LIMIT)/${GREEN}\$${EXTRA_LIMIT}${RESET}"
+    BILLING_BLOCK="${BILLING_BLOCK} $(color_cost $EXTRA_USED $EXTRA_LIMIT)${DARK_GRAY}/${RESET}${GREEN}\$${EXTRA_LIMIT}${RESET}"
 fi
 if [[ -n "$OUTPUT" ]]; then
     OUTPUT="$OUTPUT ${SEP} ${BILLING_BLOCK}"
