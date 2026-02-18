@@ -532,25 +532,25 @@ fi
 DAYS_REMAINING=$(( TOTAL_CYCLE - DAYS_ELAPSED ))
 
 # Display: C:+11/-17d | V:25¢/$5.75/$526 (Cycle: elapsed/remaining | query/session/monthly)
-CYCLE_DAYS="C${COLON}${CYAN}+${DAYS_ELAPSED}${RESET}${DIM}/${RESET}${CYAN}-${DAYS_REMAINING}d${RESET}"
+CYCLE_DAYS="${CYAN}+${DAYS_ELAPSED}${RESET}${DIM}/${RESET}${CYAN}-${DAYS_REMAINING}d${RESET}"
 V_VALUE="${LIGHT_PURPLE}${SESSION_COST_FORMATTED}${RESET}${DIM}/${RESET}${MONTHLY_TOTAL}"
 if [[ -n "${QUERY_COST:-}" ]]; then
     V_VALUE="${LIGHT_PURPLE}${QUERY_COST}${RESET}${DIM}/${RESET}${V_VALUE}"
 fi
 if [[ -n "$OUTPUT" ]]; then
-    OUTPUT="$OUTPUT ${SEP} ${CYCLE_DAYS} ${SEP} V${COLON}${V_VALUE}"
+    OUTPUT="$OUTPUT ${SEP} ${CYCLE_DAYS} ${SEP} ${V_VALUE}"
 else
-    OUTPUT="${CYCLE_DAYS} ${SEP} V${COLON}${V_VALUE}"
+    OUTPUT="${CYCLE_DAYS} ${SEP} ${V_VALUE}"
 fi
 
 # Add overage if enabled (Billing: used/limit)
 if [[ "$EXTRA_ENABLED" == "true" ]]; then
-    OUTPUT="$OUTPUT ${SEP} B${COLON}$(color_cost $EXTRA_USED $EXTRA_LIMIT)/${GREEN}\$${EXTRA_LIMIT}${RESET}"
+    OUTPUT="$OUTPUT ${SEP} $(color_cost $EXTRA_USED $EXTRA_LIMIT)/${GREEN}\$${EXTRA_LIMIT}${RESET}"
 fi
 
 # Add context window percentage (from Claude Code session data)
 CONTEXT_PCT=$(echo "$INPUT" | jq -r '.context_window.used_percentage // 0 | round' 2>/dev/null || echo "0")
-OUTPUT="$OUTPUT ${SEP} X${COLON}${BRIGHT_CYAN}${CONTEXT_PCT}%${RESET}"
+OUTPUT="$OUTPUT ${SEP} ${BRIGHT_CYAN}${CONTEXT_PCT}%${RESET}"
 
 # Add model information
 # Model in INPUT is an object with {id, display_name}
