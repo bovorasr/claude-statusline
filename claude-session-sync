@@ -311,7 +311,7 @@ cmd_read() {
     local output=""
 
     if [[ "$use_color" == "true" ]]; then
-        local LIGHT_PURPLE=$'\033[38;5;135m'
+        local LIGHT_PURPLE=$'\033[38;5;141m'
         local RESET=$'\033[0m'
         output="${LIGHT_PURPLE}\$${total_cost}${RESET}"
     else
@@ -487,7 +487,7 @@ cmd_cost_read() {
     local formatted
     formatted=$(format_money "$total")
     if [[ "$use_color" == "true" ]]; then
-        local LIGHT_PURPLE=$'\033[38;5;135m'
+        local LIGHT_PURPLE=$'\033[38;5;141m'
         local RESET=$'\033[0m'
         echo "${LIGHT_PURPLE}${formatted}${RESET}"
     else

@@ -242,8 +242,9 @@ RED=$'\033[31m'
 CYAN=$'\033[36m'              # For time periods
 BRIGHT_BLUE=$'\033[38;5;33m'  # For synthetic percentages (neutral/informational)
 BRIGHT_CYAN=$'\033[38;5;51m'  # For context percentage
-LIGHT_PURPLE=$'\033[38;5;135m' # For session cost (interesting metric)
-DIM=$'\033[2m'                # For separators
+LIGHT_PURPLE=$'\033[38;5;141m'   # For query cost and monthly total
+SESSION_PURPLE=$'\033[38;5;147m' # For session total (stands out from the others)
+DIM=$'\033[2m'                   # For separators
 DARK_GRAY=$'\033[90m'         # For model letters (H/S/O)
 RESET=$'\033[0m'
 
@@ -536,7 +537,7 @@ DAYS_REMAINING=$(( TOTAL_CYCLE - DAYS_ELAPSED ))
 
 # Billing period block: +6/-22d 25¢/$5.75/$536 [$0/$50] (all in one pipe group)
 CYCLE_DAYS="${CYAN}+${DAYS_ELAPSED}${RESET}${DIM}/${RESET}${CYAN}-${DAYS_REMAINING}d${RESET}"
-V_VALUE="${LIGHT_PURPLE}${SESSION_COST_FORMATTED}${RESET}${DIM}/${RESET}${MONTHLY_TOTAL}"
+V_VALUE="${SESSION_PURPLE}${SESSION_COST_FORMATTED}${RESET}${DIM}/${RESET}${MONTHLY_TOTAL}"
 if [[ -n "${QUERY_COST:-}" ]]; then
     V_VALUE="${LIGHT_PURPLE}${QUERY_COST}${RESET}${DIM}/${RESET}${V_VALUE}"
 fi
