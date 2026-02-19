@@ -9,10 +9,12 @@ Portable Claude Code statusline that works on **macOS, Linux, and devcontainers*
   - Credentials file `~/.claude/.credentials.json` (Linux/devcontainers)
   - macOS Keychain (fallback)
 - ✅ **5-hour and 7-day quota percentages** - color-coded (green/yellow/red)
+- ✅ **Windowed costs** - Firebase-tracked spend within each quota window (5h/7d)
+- ✅ **Per-query cost** - cost delta of the most recent query
 - ✅ **Per-model breakdown** - Sonnet % (API data), Opus/Haiku tokens (for limit inference)
 - ✅ **Billing cycle tracking** - days elapsed/remaining with DST-safe calculation
-- ✅ **Session cost tracking** - see current session spend
-- ✅ **Firebase cross-machine sync** - track monthly totals and 7-day token usage across all machines (optional)
+- ✅ **Session and monthly cost tracking** - current session + cross-machine monthly total
+- ✅ **Firebase cross-machine sync** - monthly totals, 7-day token usage, and windowed costs across all machines (optional)
 - ✅ **Context window percentage** - monitor token usage
 - ✅ **Model drift detection** - shows both configured and actual model
 - ✅ **Overage tracking** - if you have overage enabled
@@ -86,34 +88,45 @@ Without Firebase, the statusline still works - monthly totals show `?`.
 
 ## What It Shows
 
-Example statusline:
+Example statusline (with Firebase configured):
 ```
-5h:7%~3h28m | 7d:18%~18h28m = S:11% + O:245K | V:$12.34/$513 | C:+4/-24d | B:$0/$50 | X:15% | opusplan/sonnet
+7% $3.50 2h15m | 18% $28.40 6d18h = S:11% + O:245K | +6/-22d 25¢/$12.34/$513 $0/$50 | opusplan/Sonnet 4.6 15%
 ```
 
-**Quota & Usage:**
-- `5h:7%~3h28m` - 5-hour quota at 7%, resets in 3h28m (color: green <70%, yellow 70-90%, red ≥90%)
-- `7d:18%~18h28m` - 7-day quota at 18%, resets in 18h28m (color-coded same as 5h)
-- `S:11%` - Sonnet using 11% of 7-day quota (real API data, color-coded)
-- `O:245K` - Opus used 245K tokens in 7-day window (raw tokens for hidden limit inference)
-- `H:50K` - Haiku tokens (only shown if >0)
+Color does the labeling — no section headers needed. Left to right:
 
-**Costs & Billing:**
-- `V:$12.34/$513` - **Value**: current session cost ($12.34) / monthly total across all machines ($513)
-- `C:+4/-24d` - **Cycle**: 4 days elapsed / 24 days remaining in billing cycle (DST-safe)
-- `B:$0/$50` - **Billing overage**: $0 used of $50 limit (only shown if overage enabled)
+**5-hour quota group:**
+- `7%` - 5-hour quota usage (green <70%, yellow 70–90%, red ≥90%)
+- `$3.50` - spend within the 5-hour window (purple, omitted if zero / Firebase not configured)
+- `2h15m` - time until reset (cyan, omitted if unavailable)
 
-**Context & Model:**
-- `X:15%` - Context window at 15% usage
-- `opusplan/sonnet` - Configured model (from settings) / Actual model (detects drift when rate-limited)
+**7-day quota group:**
+- `18%` - 7-day quota usage (color-coded same as 5h)
+- `$28.40` - spend within the 7-day window (purple, omitted if zero)
+- `6d18h` - time until reset (cyan)
+- `= S:11% + O:245K` - per-model breakdown: Sonnet % from API, Opus/Haiku raw tokens. Dark gray letters, dim colons.
 
-**Color coding:**
-- Green: <70% quota usage
-- Yellow: 70-90% quota usage
-- Red: ≥90% quota usage (approaching limit)
-- Cyan: Time periods and cycle days
-- Blue: Token counts and synthetic percentages
-- Purple: Cost values
+**Billing period group:**
+- `+6/-22d` - days elapsed / remaining in billing cycle (cyan, DST-safe)
+- `25¢/$12.34/$513` - last query cost / session total / monthly total across all machines (purple). Amounts under $1 shown as cents (e.g. `25¢`). Query cost omitted if not yet available.
+- `$0/$50` - overage used / limit (only shown if overage is enabled; green/yellow/red)
+
+**Model group:**
+- `opusplan/Sonnet 4.6` - configured model / actual model (dark cyan; detects drift when rate-limited)
+- `15%` - context window usage (bright cyan)
+
+**Without Firebase:** windowed costs and monthly total show `?`; quota % and all other fields still work.
+
+**Color reference:**
+| Color | Meaning |
+|---|---|
+| Green/Yellow/Red | Quota % thresholds (<70% / 70–90% / ≥90%) |
+| Cyan | Time periods, billing cycle days |
+| Bright cyan | Context window % |
+| Dark cyan | Model names |
+| Blue | Token counts |
+| Purple | Cost values |
+| Dark gray | Model letter prefixes (S/O/H) |
 
 ## Platform Support
 
