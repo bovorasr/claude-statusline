@@ -221,7 +221,7 @@ cmd_sync() {
                 --max-time 3 \
                 -H "Content-Type: application/json" \
                 -d "$patch_payload" \
-                "${CLAUDE_FIREBASE_URL}.json?auth=${CLAUDE_FIREBASE_SECRET}" 2>/dev/null || echo "0")
+                "${CLAUDE_FIREBASE_URL}/.json?auth=${CLAUDE_FIREBASE_SECRET}" 2>/dev/null || echo "0")
 
             if [[ "$http_code" != "200" ]]; then
                 session_ok=false
