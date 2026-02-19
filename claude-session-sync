@@ -165,10 +165,9 @@ cmd_sync() {
         curl -s -X PUT \
             --connect-timeout 2 \
             --max-time 3 \
-            -H "Authorization: Bearer ${CLAUDE_FIREBASE_SECRET}" \
             -H "Content-Type: application/json" \
             -d "$data" \
-            "${CLAUDE_FIREBASE_URL}/sessions/${session_id}.json" \
+            "${CLAUDE_FIREBASE_URL}/sessions/${session_id}.json?auth=${CLAUDE_FIREBASE_SECRET}" \
             >/dev/null 2>&1 || true  # Ignore errors (offline, etc.)
     done
 
@@ -220,10 +219,9 @@ cmd_sync() {
             http_code=$(curl -s -o /dev/null -w "%{http_code}" -X PATCH \
                 --connect-timeout 2 \
                 --max-time 3 \
-                -H "Authorization: Bearer ${CLAUDE_FIREBASE_SECRET}" \
                 -H "Content-Type: application/json" \
                 -d "$patch_payload" \
-                "${CLAUDE_FIREBASE_URL}.json" 2>/dev/null || echo "0")
+                "${CLAUDE_FIREBASE_URL}.json?auth=${CLAUDE_FIREBASE_SECRET}" 2>/dev/null || echo "0")
 
             if [[ "$http_code" != "200" ]]; then
                 session_ok=false
@@ -280,8 +278,7 @@ cmd_read() {
     local sessions=$(curl -s -X GET \
         --connect-timeout 2 \
         --max-time 5 \
-        -H "Authorization: Bearer ${CLAUDE_FIREBASE_SECRET}" \
-        "${CLAUDE_FIREBASE_URL}/sessions.json" 2>/dev/null || echo "{}")
+        "${CLAUDE_FIREBASE_URL}/sessions.json?auth=${CLAUDE_FIREBASE_SECRET}" 2>/dev/null || echo "{}")
 
     # Get billing day from ~/.claude.json (same logic as claude-billing-cost)
     local billing_day=$(jq -r '.oauthAccount.subscriptionCreatedAt // ""' ~/.claude.json 2>/dev/null | cut -d- -f3 | cut -dT -f1 || echo "12")
@@ -314,7 +311,7 @@ cmd_read() {
     local output=""
 
     if [[ "$use_color" == "true" ]]; then
-        local LIGHT_PURPLE=$'\033[38;5;141m'
+        local LIGHT_PURPLE=$'\033[38;5;135m'
         local RESET=$'\033[0m'
         output="${LIGHT_PURPLE}\$${total_cost}${RESET}"
     else
@@ -351,8 +348,7 @@ cmd_prune() {
     local sessions=$(curl -s -X GET \
         --connect-timeout 2 \
         --max-time 5 \
-        -H "Authorization: Bearer ${CLAUDE_FIREBASE_SECRET}" \
-        "${CLAUDE_FIREBASE_URL}/sessions.json" 2>/dev/null || echo "{}")
+        "${CLAUDE_FIREBASE_URL}/sessions.json?auth=${CLAUDE_FIREBASE_SECRET}" 2>/dev/null || echo "{}")
 
     # Find and delete old sessions
     local old_sessions=$(echo "$sessions" | jq -r --arg cutoff "$cutoff_ts" '
@@ -367,8 +363,7 @@ cmd_prune() {
                 curl -s -X DELETE \
                     --connect-timeout 2 \
                     --max-time 3 \
-                    -H "Authorization: Bearer ${CLAUDE_FIREBASE_SECRET}" \
-                    "${CLAUDE_FIREBASE_URL}/sessions/${session_id}.json" \
+                    "${CLAUDE_FIREBASE_URL}/sessions/${session_id}.json?auth=${CLAUDE_FIREBASE_SECRET}" \
                     >/dev/null 2>&1 || true
             fi
         done <<< "$old_sessions"
@@ -443,8 +438,7 @@ cmd_cost_read() {
         raw_data=$(curl -s -X GET \
             --connect-timeout 2 \
             --max-time 5 \
-            -H "Authorization: Bearer ${CLAUDE_FIREBASE_SECRET}" \
-            "${CLAUDE_FIREBASE_URL}/cost-deltas.json" 2>/dev/null || echo "{}")
+            "${CLAUDE_FIREBASE_URL}/cost-deltas.json?auth=${CLAUDE_FIREBASE_SECRET}" 2>/dev/null || echo "{}")
 
         # Cache raw data if valid
         if [[ "$raw_data" != "{}" ]] && [[ "$raw_data" != "null" ]] && [[ -n "$raw_data" ]]; then
@@ -493,7 +487,7 @@ cmd_cost_read() {
     local formatted
     formatted=$(format_money "$total")
     if [[ "$use_color" == "true" ]]; then
-        local LIGHT_PURPLE=$'\033[38;5;141m'
+        local LIGHT_PURPLE=$'\033[38;5;135m'
         local RESET=$'\033[0m'
         echo "${LIGHT_PURPLE}${formatted}${RESET}"
     else
@@ -532,8 +526,7 @@ cmd_cost_prune() {
     date_keys=$(curl -s -X GET \
         --connect-timeout 2 \
         --max-time 5 \
-        -H "Authorization: Bearer ${CLAUDE_FIREBASE_SECRET}" \
-        "${CLAUDE_FIREBASE_URL}/cost-deltas.json?shallow=true" 2>/dev/null || echo "{}")
+        "${CLAUDE_FIREBASE_URL}/cost-deltas.json?auth=${CLAUDE_FIREBASE_SECRET}&shallow=true" 2>/dev/null || echo "{}")
 
     # Find dates older than cutoff
     local old_dates
@@ -549,8 +542,7 @@ cmd_cost_prune() {
                 curl -s -X DELETE \
                     --connect-timeout 2 \
                     --max-time 3 \
-                    -H "Authorization: Bearer ${CLAUDE_FIREBASE_SECRET}" \
-                    "${CLAUDE_FIREBASE_URL}/cost-deltas/${date}.json" \
+                    "${CLAUDE_FIREBASE_URL}/cost-deltas/${date}.json?auth=${CLAUDE_FIREBASE_SECRET}" \
                     >/dev/null 2>&1 || true
             fi
         done <<< "$old_dates"
@@ -624,10 +616,9 @@ cmd_token_sync() {
         curl -s -X PUT \
             --connect-timeout 2 \
             --max-time 3 \
-            -H "Authorization: Bearer ${CLAUDE_FIREBASE_SECRET}" \
             -H "Content-Type: application/json" \
             -d "$tokens_by_model" \
-            "${CLAUDE_FIREBASE_URL}/daily-tokens/${date_str}/${machine}.json" \
+            "${CLAUDE_FIREBASE_URL}/daily-tokens/${date_str}/${machine}.json?auth=${CLAUDE_FIREBASE_SECRET}" \
             >/dev/null 2>&1 || true
     done
 
@@ -683,8 +674,7 @@ cmd_token_read() {
     local daily_tokens=$(curl -s -X GET \
         --connect-timeout 2 \
         --max-time 5 \
-        -H "Authorization: Bearer ${CLAUDE_FIREBASE_SECRET}" \
-        "${CLAUDE_FIREBASE_URL}/daily-tokens.json" 2>/dev/null || echo "{}")
+        "${CLAUDE_FIREBASE_URL}/daily-tokens.json?auth=${CLAUDE_FIREBASE_SECRET}" 2>/dev/null || echo "{}")
 
     # Aggregate tokens across all machines for dates >= cutoff
     local aggregated=$(echo "$daily_tokens" | jq --arg cutoff "$cutoff_date" '
@@ -729,8 +719,7 @@ cmd_token_prune() {
     local daily_tokens=$(curl -s -X GET \
         --connect-timeout 2 \
         --max-time 5 \
-        -H "Authorization: Bearer ${CLAUDE_FIREBASE_SECRET}" \
-        "${CLAUDE_FIREBASE_URL}/daily-tokens.json" 2>/dev/null || echo "{}")
+        "${CLAUDE_FIREBASE_URL}/daily-tokens.json?auth=${CLAUDE_FIREBASE_SECRET}" 2>/dev/null || echo "{}")
 
     # Find dates older than cutoff
     local old_dates=$(echo "$daily_tokens" | jq -r --arg cutoff "$cutoff_date" '
@@ -745,8 +734,7 @@ cmd_token_prune() {
                 curl -s -X DELETE \
                     --connect-timeout 2 \
                     --max-time 3 \
-                    -H "Authorization: Bearer ${CLAUDE_FIREBASE_SECRET}" \
-                    "${CLAUDE_FIREBASE_URL}/daily-tokens/${date}.json" \
+                    "${CLAUDE_FIREBASE_URL}/daily-tokens/${date}.json?auth=${CLAUDE_FIREBASE_SECRET}" \
                     >/dev/null 2>&1 || true
             fi
         done <<< "$old_dates"
