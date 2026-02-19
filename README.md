@@ -66,18 +66,38 @@ Track session costs across all your machines in real-time.
    - Copy the database URL (e.g., `https://your-db.firebaseio.com`)
    - Get the database secret from **Project Settings > Service Accounts > Database secrets**
 
-2. **Add environment variables** to `~/.zshrc` or `~/.bashrc`:
+2. **Lock down Security Rules** (important — do this before adding any data):
+
+   Firebase databases default to open rules that allow anyone with your database URL to read your data. Lock it down:
+
+   - In the Firebase console, go to **Realtime Database > Rules**
+   - Replace the rules with:
+     ```json
+     {
+       "rules": {
+         ".read": false,
+         ".write": false
+       }
+     }
+     ```
+   - Click **Publish**
+
+   The scripts authenticate using the database secret, which is a legacy admin token that bypasses these rules — so your scripts continue to work. This change only blocks unauthenticated access (anyone who stumbles across your database URL).
+
+3. **Add environment variables** to `~/.zshrc` or `~/.bashrc`:
    ```bash
    export CLAUDE_FIREBASE_URL='https://your-db.firebaseio.com'
    export CLAUDE_FIREBASE_SECRET='your-secret-token'
    ```
 
-3. **Reload shell**:
+   Keep `CLAUDE_FIREBASE_SECRET` out of any files you commit to git.
+
+4. **Reload shell**:
    ```bash
    source ~/.zshrc  # or ~/.bashrc
    ```
 
-4. **Bootstrap with existing data** (optional, one-time):
+5. **Bootstrap with existing data** (optional, one-time):
    ```bash
    claude-session-bootstrap
    ```
