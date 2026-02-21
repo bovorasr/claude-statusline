@@ -254,6 +254,7 @@ SESSION_PURPLE=$'\033[38;5;147m' # For session total (stands out from the others
 DIM=$'\033[2m'                   # For separators
 DARK_GRAY=$'\033[90m'         # For model letters (H/S/O)
 OBSIDIAN_PURPLE=$'\033[38;5;135m'  # For Obsidian vault diamond icon
+ORANGE=$'\033[38;5;208m'           # For merge conflicts
 RESET=$'\033[0m'
 
 # Color a dollar amount based on overage limit
@@ -507,16 +508,16 @@ build_project_line() {
 
         # File status
         if [[ "${added:-0}" -gt 0 ]]; then
-            line="${line} ${GREEN}${added}+${RESET}"
+            line="${line} ${GREEN}+${added}${RESET}"
         fi
         if [[ "${deleted:-0}" -gt 0 ]]; then
-            line="${line} ${RED}${deleted}-${RESET}"
+            line="${line} ${RED}-${deleted}${RESET}"
         fi
         if [[ "${modified:-0}" -gt 0 ]]; then
             line="${line} ${YELLOW}${modified}M${RESET}"
         fi
         if [[ "${conflicts:-0}" -gt 0 ]]; then
-            line="${line} ${RED}${conflicts}⚡${RESET}"
+            line="${line} ${ORANGE}${conflicts}!${RESET}"
         fi
         if [[ "${untracked:-0}" -gt 0 ]]; then
             line="${line} ${YELLOW}${untracked}?${RESET}"
