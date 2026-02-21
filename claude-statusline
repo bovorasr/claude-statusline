@@ -494,7 +494,7 @@ build_project_line() {
 
         # Remote tracking branch
         if [[ -n "$remote_branch" ]]; then
-            line="${line}${DIM}->${RESET}${remote_branch}"
+            line="${line}${DIM}->${RESET}${CYAN}${remote_branch}${RESET}"
         fi
 
         # Ahead/behind
