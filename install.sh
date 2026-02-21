@@ -11,7 +11,7 @@ echo "Installing Claude Code statusline..."
 mkdir -p "$BIN_DIR"
 
 # Download and install scripts
-for script in claude-statusline claude-session-sync claude-session-bootstrap claude-billing-cost; do
+for script in claude-statusline claude-statusline-collect claude-statusline-render claude-session-sync claude-session-bootstrap claude-billing-cost; do
     echo "  - Downloading $script..."
     curl -fsSL "$BASE/$script" -o "$BIN_DIR/$script"
     chmod +x "$BIN_DIR/$script"

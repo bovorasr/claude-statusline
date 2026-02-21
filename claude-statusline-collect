@@ -1,0 +1,404 @@
+#!/usr/bin/env bash
+
+# claude-statusline-collect: Gather all statusline data, output as key=value pairs to stdout
+# Companion to claude-statusline-render which reads this output and produces ANSI output
+
+set -euo pipefail
+
+# Parse input JSON from Claude Code
+if [[ -n "${1:-}" ]] && [[ "$1" != "{}" ]]; then
+    INPUT="$1"
+else
+    INPUT=$(timeout 0.1 cat 2>/dev/null || echo "{}")
+fi
+
+CACHE_FILE="/tmp/claude-usage-cache"
+CACHE_MAX_AGE=30  # seconds
+
+GIT_CACHE_FILE="/tmp/claude-git-status-cache"
+GIT_CACHE_MAX_AGE=5  # seconds
+
+# Extract session metadata from input JSON
+PROJECT_DIR=$(echo "$INPUT" | jq -r '.workspace.project_dir // .cwd // ""' 2>/dev/null || echo "")
+CURRENT_DIR=$(echo "$INPUT" | jq -r '.workspace.current_dir // ""' 2>/dev/null || echo "")
+SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // ""' 2>/dev/null || echo "")
+SESSION_COST=$(echo "$INPUT" | jq -r '.cost.total_cost_usd // .usage.total_cost_usd // .totalCost // .total_cost_usd // 0' 2>/dev/null || echo "0")
+CONTEXT_PCT=$(echo "$INPUT" | jq -r '.context_window.used_percentage // 0 | round' 2>/dev/null || echo "0")
+MODEL_NAME=$(echo "$INPUT" | jq -r '
+    if (.model | type) == "string" then .model
+    elif (.model | type) == "object" then (.model.display_name // .model.name // .model.id // "")
+    else ""
+    end
+' 2>/dev/null || echo "")
+MODEL_PLAN=$(jq -r '.model // ""' ~/.claude/settings.json 2>/dev/null || echo "")
+
+# Check if usage API cache is fresh
+cache_is_fresh() {
+    if [[ ! -f "$CACHE_FILE" ]]; then
+        return 1
+    fi
+    local now=$(date +%s)
+    local mtime
+    if stat -f %m "$CACHE_FILE" >/dev/null 2>&1; then
+        mtime=$(stat -f %m "$CACHE_FILE")
+    else
+        mtime=$(stat -c %Y "$CACHE_FILE")
+    fi
+    local age=$((now - mtime))
+    [[ $age -lt $CACHE_MAX_AGE ]]
+}
+
+# Portable credential chain - try all sources in priority order
+get_oauth_token() {
+    local token=""
+
+    # 1. Environment variable (explicit override)
+    if [[ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]]; then
+        echo "$CLAUDE_CODE_OAUTH_TOKEN"
+        return 0
+    fi
+
+    # 2. Credentials file (Linux/devcontainers)
+    if [[ -f "$HOME/.claude/.credentials.json" ]]; then
+        token=$(jq -r '.claudeAiOauth.accessToken // empty' "$HOME/.claude/.credentials.json" 2>/dev/null || echo "")
+        if [[ -n "$token" ]]; then
+            echo "$token"
+            return 0
+        fi
+    fi
+
+    # 3. macOS Keychain (fallback)
+    if command -v security >/dev/null 2>&1; then
+        token=$(security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null \
+            | jq -r '.claudeAiOauth.accessToken // empty' 2>/dev/null || echo "")
+        if [[ -n "$token" ]]; then
+            echo "$token"
+            return 0
+        fi
+    fi
+
+    return 1
+}
+
+# Fetch usage data from API (with caching)
+USAGE="{}"
+if cache_is_fresh; then
+    USAGE=$(cat "$CACHE_FILE")
+else
+    TOKEN=$(get_oauth_token || echo "")
+    if [[ -n "$TOKEN" ]]; then
+        USAGE=$(curl -s --connect-timeout 3 --max-time 5 \
+            "https://api.anthropic.com/api/oauth/usage" \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "anthropic-beta: oauth-2025-04-20" \
+            -H "Content-Type: application/json" 2>/dev/null || echo "{}")
+        if echo "$USAGE" | jq -e '.five_hour' >/dev/null 2>&1; then
+            echo "$USAGE" > "$CACHE_FILE"
+        elif [[ -f "$CACHE_FILE" ]]; then
+            USAGE=$(cat "$CACHE_FILE")
+        fi
+    fi
+fi
+
+# Parse usage data - handle null gracefully, default to "?"
+FIVE_HOUR=$(echo "$USAGE" | jq -r '
+    if (.five_hour.utilization // null) != null
+    then (.five_hour.utilization | floor | tostring)
+    else "?"
+    end
+' 2>/dev/null || echo "?")
+FIVE_HOUR="${FIVE_HOUR:-?}"
+
+FIVE_RESET=$(echo "$USAGE" | jq -r '.five_hour.resets_at // ""' 2>/dev/null || echo "")
+
+SEVEN_DAY=$(echo "$USAGE" | jq -r '
+    if (.seven_day.utilization // null) != null
+    then (.seven_day.utilization | floor | tostring)
+    else "?"
+    end
+' 2>/dev/null || echo "?")
+SEVEN_DAY="${SEVEN_DAY:-?}"
+
+SEVEN_RESET=$(echo "$USAGE" | jq -r '.seven_day.resets_at // ""' 2>/dev/null || echo "")
+
+SONNET_PCT=$(echo "$USAGE" | jq -r '
+    .seven_day_sonnet.utilization // null |
+    if . != null then floor | tostring else "null" end
+' 2>/dev/null || echo "null")
+
+EXTRA_ENABLED=$(echo "$USAGE" | jq -r '.extra_usage.is_enabled // false' 2>/dev/null || echo "false")
+EXTRA_USED=$(echo "$USAGE" | jq -r '.extra_usage.used_credits // 0 | floor / 100' 2>/dev/null || echo "0")
+EXTRA_LIMIT=$(echo "$USAGE" | jq -r '.extra_usage.monthly_limit // 0 | floor / 100' 2>/dev/null || echo "0")
+
+# Per-model token counts (7-day window) - try Firebase then local stats
+HAIKU_TOKENS=0
+SONNET_TOKENS=0
+OPUS_TOKENS=0
+
+if [[ "$SEVEN_DAY" != "?" ]] && [[ "$SONNET_PCT" != "null" ]]; then
+    # Try Firebase first (cross-machine, 7-day windowed)
+    if [[ -n "${CLAUDE_FIREBASE_URL:-}" ]] && command -v claude-session-sync >/dev/null 2>&1; then
+        TOKEN_DATA=$(claude-session-sync token-read --days 7 2>/dev/null || echo "{}")
+        if [[ "$TOKEN_DATA" != "{}" ]]; then
+            HAIKU_TOKENS=$(echo "$TOKEN_DATA" | jq -r 'to_entries | map(select(.key | test("haiku"))) | map(.value) | add // 0' 2>/dev/null || echo 0)
+            SONNET_TOKENS=$(echo "$TOKEN_DATA" | jq -r 'to_entries | map(select(.key | test("sonnet"))) | map(.value) | add // 0' 2>/dev/null || echo 0)
+            OPUS_TOKENS=$(echo "$TOKEN_DATA" | jq -r 'to_entries | map(select(.key | test("opus"))) | map(.value) | add // 0' 2>/dev/null || echo 0)
+        fi
+    fi
+
+    # Fallback to local dailyModelTokens (7-day windowed)
+    if [[ $HAIKU_TOKENS -eq 0 ]] && [[ $SONNET_TOKENS -eq 0 ]] && [[ $OPUS_TOKENS -eq 0 ]]; then
+        STATS_FILE="$HOME/.claude/stats-cache.json"
+        if [[ -f "$STATS_FILE" ]]; then
+            if date -v-7d +%Y-%m-%d >/dev/null 2>&1; then
+                cutoff_date=$(date -v-7d +%Y-%m-%d)
+            else
+                cutoff_date=$(date -d "7 days ago" +%Y-%m-%d)
+            fi
+            daily_data=$(jq --arg cutoff "$cutoff_date" '
+                .dailyModelTokens // [] |
+                map(select(.date >= $cutoff)) |
+                map(.tokensByModel // {}) |
+                reduce .[] as $day ({}; . as $acc | $day | to_entries | reduce .[] as $model ($acc; .[$model.key] += $model.value))
+            ' "$STATS_FILE" 2>/dev/null || echo "{}")
+            if [[ "$daily_data" != "{}" ]]; then
+                HAIKU_TOKENS=$(echo "$daily_data" | jq -r 'to_entries | map(select(.key | test("haiku"))) | map(.value) | add // 0' 2>/dev/null || echo 0)
+                SONNET_TOKENS=$(echo "$daily_data" | jq -r 'to_entries | map(select(.key | test("sonnet"))) | map(.value) | add // 0' 2>/dev/null || echo 0)
+                OPUS_TOKENS=$(echo "$daily_data" | jq -r 'to_entries | map(select(.key | test("opus"))) | map(.value) | add // 0' 2>/dev/null || echo 0)
+            fi
+        fi
+    fi
+fi
+
+# WAL write + background sync (side effects - no output needed here)
+QUERY_COST=""
+if [[ -n "$SESSION_ID" ]] && command -v claude-session-sync >/dev/null 2>&1; then
+    WAL_FILE="/tmp/claude-session-wal/$SESSION_ID"
+    IS_NEW_SESSION=false
+    if [[ ! -f "$WAL_FILE" ]]; then
+        IS_NEW_SESSION=true
+    fi
+
+    # Write to WAL (every invocation, instant)
+    claude-session-sync wal-write "$SESSION_ID" "$SESSION_COST" 2>/dev/null || true
+
+    # Read last query cost delta (written by wal-write above)
+    if [[ -f "/tmp/claude-last-query-cost" ]]; then
+        read -r _qc_session _qc_cost < "/tmp/claude-last-query-cost" 2>/dev/null || true
+        if [[ "${_qc_session:-}" == "$SESSION_ID" ]]; then
+            QUERY_COST="${_qc_cost:-}"
+        fi
+    fi
+
+    # Background sync (throttled to every 10s)
+    (
+        if [[ "$IS_NEW_SESSION" == "true" ]]; then
+            claude-session-sync sync 2>/dev/null || true
+            claude-session-sync prune 2>/dev/null || true
+            claude-session-sync token-sync 2>/dev/null || true
+            claude-session-sync token-prune 2>/dev/null || true
+            claude-session-sync cost-prune 2>/dev/null || true
+        else
+            claude-session-sync sync 2>/dev/null || true
+            claude-session-sync token-sync 2>/dev/null || true
+        fi
+    ) &
+fi
+
+# Windowed costs from Firebase (pre-formatted by format_money, no ANSI)
+COST_5H=""
+COST_7D=""
+if [[ -n "${CLAUDE_FIREBASE_URL:-}" ]] && command -v claude-session-sync >/dev/null 2>&1; then
+    COST_5H=$(claude-session-sync cost-read --window 5h 2>/dev/null || echo "")
+    COST_7D=$(claude-session-sync cost-read --window 7d 2>/dev/null || echo "")
+fi
+
+# Monthly total from Firebase (strip leading $ so render can add color + $ itself)
+MONTHLY_TOTAL="?"
+if [[ -n "${CLAUDE_FIREBASE_URL:-}" ]] && command -v claude-session-sync >/dev/null 2>&1; then
+    raw_total=$(claude-session-sync read 2>/dev/null || echo "")
+    if [[ -n "$raw_total" ]]; then
+        MONTHLY_TOTAL="${raw_total#\$}"  # strip leading $, "?" passes through unchanged
+    fi
+fi
+
+# Billing cycle date math
+BILLING_DAY=$(jq -r '.oauthAccount.subscriptionCreatedAt // ""' ~/.claude.json 2>/dev/null | cut -d- -f3 | cut -dT -f1 || echo "12")
+BILLING_DAY="${BILLING_DAY:-12}"
+CURRENT_DAY=$(date +%d | sed 's/^0//')
+CURRENT_MONTH=$(date +%Y-%m)
+
+if [[ $CURRENT_DAY -ge $BILLING_DAY ]]; then
+    CYCLE_START="${CURRENT_MONTH}-${BILLING_DAY}"
+    if date -v+1m +%Y-%m >/dev/null 2>&1; then
+        CYCLE_END=$(date -v+1m +%Y-%m)-${BILLING_DAY}
+    else
+        CYCLE_END=$(date -d "1 month" +%Y-%m)-${BILLING_DAY}
+    fi
+else
+    if date -v-1m +%Y-%m >/dev/null 2>&1; then
+        CYCLE_START=$(date -v-1m +%Y-%m)-${BILLING_DAY}
+    else
+        CYCLE_START=$(date -d "1 month ago" +%Y-%m)-${BILLING_DAY}
+    fi
+    CYCLE_END="${CURRENT_MONTH}-${BILLING_DAY}"
+fi
+
+CURRENT_TS=$(date +%s)
+if date -j -f "%Y-%m-%d" "$CYCLE_START" +%s >/dev/null 2>&1; then
+    CYCLE_START_TS=$(date -j -f "%Y-%m-%d" "$CYCLE_START" +%s)
+else
+    CYCLE_START_TS=$(date -d "$CYCLE_START" +%s)
+fi
+DAYS_ELAPSED=$(( (CURRENT_TS - CYCLE_START_TS) / 86400 ))
+
+START_DATE=$(echo "$CYCLE_START" | cut -d' ' -f1)
+END_DATE=$(echo "$CYCLE_END" | cut -d' ' -f1)
+if date -u -j -f "%Y-%m-%d" "$START_DATE" +%s >/dev/null 2>&1; then
+    TOTAL_CYCLE=$(( ($(date -u -j -f "%Y-%m-%d" "$END_DATE" +%s) - $(date -u -j -f "%Y-%m-%d" "$START_DATE" +%s)) / 86400 ))
+else
+    TOTAL_CYCLE=$(( ($(date -u -d "$END_DATE" +%s) - $(date -u -d "$START_DATE" +%s)) / 86400 ))
+fi
+DAYS_REMAINING=$(( TOTAL_CYCLE - DAYS_ELAPSED ))
+
+# Check if git cache is fresh
+git_cache_is_fresh() {
+    if [[ ! -f "$GIT_CACHE_FILE" ]]; then
+        return 1
+    fi
+    local now=$(date +%s)
+    local mtime
+    if stat -f %m "$GIT_CACHE_FILE" >/dev/null 2>&1; then
+        mtime=$(stat -f %m "$GIT_CACHE_FILE")
+    else
+        mtime=$(stat -c %Y "$GIT_CACHE_FILE")
+    fi
+    local age=$((now - mtime))
+    [[ $age -lt $GIT_CACHE_MAX_AGE ]]
+}
+
+# Gather git info, cache as pipe-delimited string
+# Output: branch|remote_branch|ahead|behind|added|deleted|modified|conflicts|untracked|has_remote
+get_git_info() {
+    local dir="$1"
+
+    if git_cache_is_fresh; then
+        cat "$GIT_CACHE_FILE" 2>/dev/null
+        return
+    fi
+
+    if ! git -C "$dir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        echo "" > "$GIT_CACHE_FILE"
+        echo ""
+        return
+    fi
+
+    local branch
+    branch=$(git -C "$dir" symbolic-ref --short HEAD 2>/dev/null || git -C "$dir" rev-parse --short HEAD 2>/dev/null || echo "HEAD")
+
+    local remote_branch
+    remote_branch=$(git -C "$dir" rev-parse --abbrev-ref @{upstream} 2>/dev/null || echo "")
+
+    local ahead=0
+    local behind=0
+    if [[ -n "$remote_branch" ]]; then
+        local ab
+        ab=$(git -C "$dir" rev-list --left-right --count HEAD...@{upstream} 2>/dev/null || echo "0	0")
+        ahead=$(echo "$ab" | awk '{print $1}')
+        behind=$(echo "$ab" | awk '{print $2}')
+    fi
+
+    local has_remote=false
+    if git -C "$dir" remote 2>/dev/null | grep -q .; then
+        has_remote=true
+    fi
+
+    local added=0 deleted=0 modified=0 conflicts=0 untracked=0
+    while IFS= read -r line; do
+        local xy="${line:0:2}"
+        local x="${xy:0:1}"
+        local y="${xy:1:1}"
+        if [[ "$xy" == "UU" ]] || [[ "$xy" == "AA" ]] || [[ "$xy" == "DD" ]]; then
+            conflicts=$((conflicts + 1))
+        elif [[ "$xy" == "??" ]]; then
+            untracked=$((untracked + 1))
+        else
+            if [[ "$x" == "A" ]] && [[ "$y" != "U" ]]; then
+                added=$((added + 1))
+            fi
+            if [[ "$x" == "D" ]] || [[ "$y" == "D" ]]; then
+                deleted=$((deleted + 1))
+            fi
+            if [[ "$x" == "M" ]] || [[ "$y" == "M" ]] || [[ "$xy" == "MM" ]]; then
+                modified=$((modified + 1))
+            fi
+        fi
+    done < <(git -C "$dir" status --porcelain 2>/dev/null || true)
+
+    local result="${branch}|${remote_branch}|${ahead}|${behind}|${added}|${deleted}|${modified}|${conflicts}|${untracked}|${has_remote}"
+    echo "$result" > "$GIT_CACHE_FILE"
+    echo "$result"
+}
+
+# Gather project/git info
+IS_OBSIDIAN=false
+GIT_BRANCH=""
+GIT_REMOTE_BRANCH=""
+GIT_AHEAD=0
+GIT_BEHIND=0
+GIT_ADDED=0
+GIT_DELETED=0
+GIT_MODIFIED=0
+GIT_CONFLICTS=0
+GIT_UNTRACKED=0
+GIT_HAS_REMOTE=false
+
+if [[ -n "$PROJECT_DIR" ]]; then
+    if [[ -d "${PROJECT_DIR}/.obsidian" ]]; then
+        IS_OBSIDIAN=true
+    fi
+
+    git_data=$(get_git_info "$PROJECT_DIR")
+    if [[ -n "$git_data" ]]; then
+        IFS='|' read -r GIT_BRANCH GIT_REMOTE_BRANCH GIT_AHEAD GIT_BEHIND GIT_ADDED GIT_DELETED GIT_MODIFIED GIT_CONFLICTS GIT_UNTRACKED GIT_HAS_REMOTE <<< "$git_data"
+    fi
+fi
+
+# Output all collected data as key=value pairs
+# Values are raw (no ANSI codes) except cost_5h/cost_7d which come pre-formatted from claude-session-sync
+cat <<KVEOF
+five_hour_pct=${FIVE_HOUR}
+five_hour_resets_at=${FIVE_RESET}
+seven_day_pct=${SEVEN_DAY}
+seven_day_resets_at=${SEVEN_RESET}
+sonnet_pct=${SONNET_PCT}
+extra_enabled=${EXTRA_ENABLED}
+extra_used=${EXTRA_USED}
+extra_limit=${EXTRA_LIMIT}
+haiku_tokens=${HAIKU_TOKENS}
+sonnet_tokens=${SONNET_TOKENS}
+opus_tokens=${OPUS_TOKENS}
+session_cost=${SESSION_COST}
+query_cost=${QUERY_COST}
+cost_5h=${COST_5H}
+cost_7d=${COST_7D}
+monthly_total=${MONTHLY_TOTAL}
+days_elapsed=${DAYS_ELAPSED}
+days_remaining=${DAYS_REMAINING}
+context_pct=${CONTEXT_PCT}
+model_name=${MODEL_NAME}
+model_plan=${MODEL_PLAN}
+project_dir=${PROJECT_DIR}
+current_dir=${CURRENT_DIR}
+is_obsidian=${IS_OBSIDIAN}
+git_branch=${GIT_BRANCH}
+git_remote_branch=${GIT_REMOTE_BRANCH}
+git_ahead=${GIT_AHEAD}
+git_behind=${GIT_BEHIND}
+git_added=${GIT_ADDED}
+git_deleted=${GIT_DELETED}
+git_modified=${GIT_MODIFIED}
+git_conflicts=${GIT_CONFLICTS}
+git_untracked=${GIT_UNTRACKED}
+git_has_remote=${GIT_HAS_REMOTE}
+KVEOF

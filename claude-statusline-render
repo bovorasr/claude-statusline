@@ -1,0 +1,366 @@
+#!/usr/bin/env bash
+
+# claude-statusline-render: Read key=value from stdin, output ANSI statusline
+# Companion to claude-statusline-collect which gathers the data
+
+set -euo pipefail
+
+# ANSI color codes
+GREEN=$'\033[32m'
+YELLOW=$'\033[33m'
+RED=$'\033[31m'
+CYAN=$'\033[36m'
+BRIGHT_BLUE=$'\033[38;5;33m'
+BRIGHT_CYAN=$'\033[38;5;51m'
+LIGHT_PURPLE=$'\033[38;5;141m'
+SESSION_PURPLE=$'\033[38;5;147m'
+DIM=$'\033[2m'
+DARK_GRAY=$'\033[90m'
+OBSIDIAN_PURPLE=$'\033[38;5;135m'
+ORANGE=$'\033[38;5;208m'
+RESET=$'\033[0m'
+
+# Color coding based on utilization percentage (green/yellow/red heatmap)
+color_usage() {
+    local val=$1
+    if [[ "$val" == "?" ]] || [[ "$val" == "null" ]]; then
+        echo "?"
+    else
+        local int_part=$(awk "BEGIN {printf \"%.0f\", $val}")
+        local decimal_check=$(awk "BEGIN {if ($val == int($val)) print \"true\"; else print \"false\"}")
+        local formatted_val
+        if [[ "$decimal_check" == "true" ]]; then
+            formatted_val="${int_part}%"
+        else
+            formatted_val="${val}%"
+        fi
+        if (( $(awk "BEGIN {print ($val >= 90)}") )); then
+            echo "${RED}${formatted_val}${RESET}"
+        elif (( $(awk "BEGIN {print ($val >= 70)}") )); then
+            echo "${YELLOW}${formatted_val}${RESET}"
+        else
+            echo "${GREEN}${formatted_val}${RESET}"
+        fi
+    fi
+}
+
+# Color a dollar amount based on fraction of overage limit
+color_cost() {
+    local cost=$1
+    local limit=${2:-50}
+    local yellow_threshold=$(awk "BEGIN {printf \"%.0f\", $limit * 0.7}")
+    local red_threshold=$(awk "BEGIN {printf \"%.0f\", $limit * 0.9}")
+    if (( $(awk "BEGIN {print ($cost >= $red_threshold)}") )); then
+        echo "${RED}\$${cost}${RESET}"
+    elif (( $(awk "BEGIN {print ($cost >= $yellow_threshold)}") )); then
+        echo "${YELLOW}\$${cost}${RESET}"
+    else
+        echo "${GREEN}\$${cost}${RESET}"
+    fi
+}
+
+# Format dollar amount: use cent symbol for amounts < $1
+format_money() {
+    local amount=$1
+    if (( $(awk "BEGIN {print ($amount < 1.0)}") )); then
+        local cents
+        cents=$(awk "BEGIN {printf \"%.0f\", $amount * 100}")
+        printf "%s¢" "$cents"
+    else
+        printf "\$%.2f" "$amount"
+    fi
+}
+
+# Format token count as human-readable (K/M suffix)
+format_tokens() {
+    local tokens=$1
+    if [[ $tokens -ge 1000000 ]]; then
+        awk "BEGIN {printf \"%.1fM\", $tokens / 1000000}"
+    elif [[ $tokens -ge 1000 ]]; then
+        awk "BEGIN {printf \"%.0fK\", $tokens / 1000}"
+    else
+        echo "$tokens"
+    fi
+}
+
+# Format compact time until reset (e.g. "2h30m", "4d", "now")
+time_until() {
+    local reset_time=$1
+    if [[ -z "$reset_time" ]] || [[ "$reset_time" == "null" ]]; then
+        echo ""
+        return
+    fi
+    local now=$(date -u +%s)
+    local reset=$(date -u -d "$reset_time" +%s 2>/dev/null || date -j -u -f "%Y-%m-%dT%H:%M:%S" "$(echo "$reset_time" | cut -d. -f1)" +%s 2>/dev/null || echo "$now")
+    local diff=$((reset - now))
+
+    local time_str
+    if [[ $diff -le 0 ]]; then
+        time_str="now"
+    elif [[ $diff -lt 60 ]]; then
+        time_str="${diff}s"
+    elif [[ $diff -lt 3600 ]]; then
+        time_str="$((diff / 60))m"
+    elif [[ $diff -lt 86400 ]]; then
+        local h=$((diff / 3600))
+        local m=$((diff % 3600 / 60))
+        if [[ $m -eq 0 ]]; then
+            time_str="${h}h"
+        else
+            time_str="${h}h${m}m"
+        fi
+    else
+        local d=$((diff / 86400))
+        local h=$((diff % 86400 / 3600))
+        if [[ $h -eq 0 ]]; then
+            time_str="${d}d"
+        else
+            time_str="${d}d${h}h"
+        fi
+    fi
+
+    echo "${CYAN}${time_str}${RESET}"
+}
+
+# ── Parse key=value from stdin ─────────────────────────────────────────────
+
+# Defaults (used when key is absent from input)
+five_hour_pct="?"
+five_hour_resets_at=""
+seven_day_pct="?"
+seven_day_resets_at=""
+sonnet_pct="null"
+extra_enabled="false"
+extra_used=0
+extra_limit=50
+haiku_tokens=0
+sonnet_tokens=0
+opus_tokens=0
+session_cost=0
+query_cost=""
+cost_5h=""
+cost_7d=""
+monthly_total="?"
+days_elapsed=0
+days_remaining=0
+context_pct=0
+model_name=""
+model_plan=""
+project_dir=""
+current_dir=""
+is_obsidian="false"
+git_branch=""
+git_remote_branch=""
+git_ahead=0
+git_behind=0
+git_added=0
+git_deleted=0
+git_modified=0
+git_conflicts=0
+git_untracked=0
+git_has_remote="false"
+
+while IFS= read -r line; do
+    # Skip blank lines and comments
+    [[ -z "${line// }" ]] && continue
+    [[ "$line" =~ ^[[:space:]]*# ]] && continue
+    key="${line%%=*}"
+    value="${line#*=}"
+    # Use printf -v for safe assignment (no further shell expansion)
+    printf -v "$key" '%s' "$value"
+done
+
+# ── Dim separators ─────────────────────────────────────────────────────────
+
+SEP="${DIM}|${RESET}"
+COLON="${DIM}:${RESET}"
+EQUALS="${DIM}=${RESET}"
+PLUS="${DIM}+${RESET}"
+
+# ── Build project/git info line ────────────────────────────────────────────
+
+PROJECT_LINE=""
+if [[ -n "${project_dir:-}" ]]; then
+    line=""
+
+    # Obsidian vault diamond icon
+    if [[ "${is_obsidian:-false}" == "true" ]]; then
+        line="${OBSIDIAN_PURPLE}◆${RESET} "
+    fi
+
+    # Project directory display
+    local_proj_base=""
+    if [[ "$project_dir" == "$HOME" ]]; then
+        local_proj_base="~"
+    else
+        local_proj_base=$(basename "$project_dir")
+    fi
+    line="${line}${CYAN}${local_proj_base}${RESET}"
+
+    # Current dir (only if different from project_dir)
+    if [[ -n "${current_dir:-}" ]] && [[ "$current_dir" != "$project_dir" ]]; then
+        local_cur_base=""
+        if [[ "$current_dir" == "$HOME" ]]; then
+            local_cur_base="~"
+        else
+            local_cur_base=$(basename "$current_dir")
+        fi
+        line="${line}${DIM}->${RESET}${local_cur_base}"
+    fi
+
+    # Git info (only if we have a branch)
+    if [[ -n "${git_branch:-}" ]]; then
+        # Git icon: cloud if has remote, home if local-only
+        if [[ "${git_has_remote:-false}" == "true" ]]; then
+            line="${line} ${YELLOW}☁${RESET}"
+        else
+            line="${line} ${YELLOW}⌂${RESET}"
+        fi
+
+        line="${line}${CYAN}${git_branch}${RESET}"
+
+        if [[ -n "${git_remote_branch:-}" ]]; then
+            line="${line}${DIM}->${RESET}${CYAN}${git_remote_branch}${RESET}"
+        fi
+
+        if [[ "${git_ahead:-0}" -gt 0 ]]; then
+            line="${line} ${GREEN}↑${git_ahead}${RESET}"
+        fi
+        if [[ "${git_behind:-0}" -gt 0 ]]; then
+            line="${line} ${RED}↓${git_behind}${RESET}"
+        fi
+        if [[ "${git_added:-0}" -gt 0 ]]; then
+            line="${line} ${GREEN}+${git_added}${RESET}"
+        fi
+        if [[ "${git_deleted:-0}" -gt 0 ]]; then
+            line="${line} ${RED}-${git_deleted}${RESET}"
+        fi
+        if [[ "${git_modified:-0}" -gt 0 ]]; then
+            line="${line} ${YELLOW}${git_modified}M${RESET}"
+        fi
+        if [[ "${git_conflicts:-0}" -gt 0 ]]; then
+            line="${line} ${ORANGE}${git_conflicts}!${RESET}"
+        fi
+        if [[ "${git_untracked:-0}" -gt 0 ]]; then
+            line="${line} ${YELLOW}${git_untracked}?${RESET}"
+        fi
+    fi
+
+    PROJECT_LINE="$line"
+fi
+
+# ── Build cost/status line ─────────────────────────────────────────────────
+
+OUTPUT=""
+
+# Quota section (only if we have API data)
+if [[ "${five_hour_pct:-?}" != "?" ]] || [[ "${seven_day_pct:-?}" != "?" ]]; then
+    FIVE_TIME=$(time_until "${five_hour_resets_at:-}")
+    SEVEN_TIME=$(time_until "${seven_day_resets_at:-}")
+
+    OUTPUT="$(color_usage "${five_hour_pct:-?}")"
+    if [[ -n "${cost_5h:-}" ]]; then
+        OUTPUT="${OUTPUT} ${LIGHT_PURPLE}${cost_5h}${RESET}"
+    fi
+    if [[ -n "${FIVE_TIME:-}" ]]; then
+        OUTPUT="${OUTPUT} ${FIVE_TIME}"
+    fi
+
+    OUTPUT="${OUTPUT} ${SEP} $(color_usage "${seven_day_pct:-?}")"
+    if [[ -n "${cost_7d:-}" ]]; then
+        OUTPUT="${OUTPUT} ${LIGHT_PURPLE}${cost_7d}${RESET}"
+    fi
+    if [[ -n "${SEVEN_TIME:-}" ]]; then
+        OUTPUT="${OUTPUT} ${SEVEN_TIME}"
+    fi
+
+    # Per-model breakdown: H:tokens + S:% + O:tokens
+    MODELS_OUTPUT=""
+    FIRST_MODEL=true
+
+    if [[ "${haiku_tokens:-0}" -gt 0 ]]; then
+        hval="${DARK_GRAY}H${RESET}${COLON}${BRIGHT_BLUE}$(format_tokens "${haiku_tokens:-0}")${RESET}"
+        if [[ "$FIRST_MODEL" == "true" ]]; then
+            MODELS_OUTPUT="$hval"; FIRST_MODEL=false
+        else
+            MODELS_OUTPUT="$MODELS_OUTPUT ${PLUS} $hval"
+        fi
+    fi
+
+    if [[ "${sonnet_pct:-null}" != "null" ]] && [[ "${sonnet_pct:-null}" != "?" ]]; then
+        sval="${DARK_GRAY}S${RESET}${COLON}$(color_usage "${sonnet_pct}")"
+        if [[ "$FIRST_MODEL" == "true" ]]; then
+            MODELS_OUTPUT="$sval"; FIRST_MODEL=false
+        else
+            MODELS_OUTPUT="$MODELS_OUTPUT ${PLUS} $sval"
+        fi
+    fi
+
+    if [[ "${opus_tokens:-0}" -gt 0 ]]; then
+        oval="${DARK_GRAY}O${RESET}${COLON}${BRIGHT_BLUE}$(format_tokens "${opus_tokens:-0}")${RESET}"
+        if [[ "$FIRST_MODEL" == "true" ]]; then
+            MODELS_OUTPUT="$oval"; FIRST_MODEL=false
+        else
+            MODELS_OUTPUT="$MODELS_OUTPUT ${PLUS} $oval"
+        fi
+    fi
+
+    if [[ -n "$MODELS_OUTPUT" ]]; then
+        OUTPUT="$OUTPUT ${EQUALS} ${MODELS_OUTPUT}"
+    fi
+fi
+
+# Monthly total display
+if [[ "${monthly_total:-?}" == "?" ]]; then
+    MONTHLY_DISPLAY="${LIGHT_PURPLE}?${RESET}"
+else
+    MONTHLY_DISPLAY="${LIGHT_PURPLE}\$${monthly_total}${RESET}"
+fi
+
+# Session cost display
+SESSION_COST_FORMATTED=$(format_money "${session_cost:-0}")
+
+# Build V value: [query/]session/monthly
+V_VALUE="${SESSION_PURPLE}${SESSION_COST_FORMATTED}${RESET}${DIM}/${RESET}${MONTHLY_DISPLAY}"
+if [[ -n "${query_cost:-}" ]] && (( $(awk "BEGIN {print (${query_cost:-0} > 0.0001)}") )); then
+    QUERY_FORMATTED=$(format_money "${query_cost}")
+    V_VALUE="${LIGHT_PURPLE}${QUERY_FORMATTED}${RESET}${DIM}/${RESET}${V_VALUE}"
+fi
+
+# Billing cycle days display
+CYCLE_DAYS="${CYAN}+${days_elapsed:-0}${RESET}${DIM}/${RESET}${CYAN}-${days_remaining:-0}d${RESET}"
+BILLING_BLOCK="${CYCLE_DAYS} ${V_VALUE}"
+
+# Extra usage block (overage)
+if [[ "${extra_enabled:-false}" == "true" ]]; then
+    BILLING_BLOCK="${BILLING_BLOCK} $(color_cost "${extra_used:-0}" "${extra_limit:-50}")${DARK_GRAY}/${RESET}${GREEN}\$${extra_limit}${RESET}"
+fi
+
+if [[ -n "$OUTPUT" ]]; then
+    OUTPUT="$OUTPUT ${SEP} ${BILLING_BLOCK}"
+else
+    OUTPUT="${BILLING_BLOCK}"
+fi
+
+# Model + context percentage
+MODEL_DISPLAY=""
+if [[ -n "${model_name:-}" ]] && [[ -n "${model_plan:-}" ]] && [[ "${model_plan:-}" != "null" ]]; then
+    MODEL_DISPLAY="${CYAN}${model_plan}${RESET}${DIM}/${RESET}${CYAN}${model_name}${RESET}"
+elif [[ -n "${model_name:-}" ]]; then
+    MODEL_DISPLAY="${CYAN}${model_name}${RESET}"
+elif [[ -n "${model_plan:-}" ]] && [[ "${model_plan:-}" != "null" ]]; then
+    MODEL_DISPLAY="${CYAN}${model_plan}${RESET}"
+fi
+
+if [[ -n "$MODEL_DISPLAY" ]]; then
+    OUTPUT="$OUTPUT ${SEP} ${MODEL_DISPLAY} ${BRIGHT_CYAN}${context_pct:-0}%${RESET}"
+else
+    OUTPUT="$OUTPUT ${SEP} ${BRIGHT_CYAN}${context_pct:-0}%${RESET}"
+fi
+
+# ── Output ─────────────────────────────────────────────────────────────────
+
+if [[ -n "$PROJECT_LINE" ]]; then
+    echo "$PROJECT_LINE"
+fi
+echo "$OUTPUT"
