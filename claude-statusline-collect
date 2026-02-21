@@ -30,6 +30,7 @@ MODEL_NAME=$(echo "$INPUT" | jq -r '
     else ""
     end
 ' 2>/dev/null || echo "")
+MODEL_ID=$(echo "$INPUT" | jq -r '.model.id // ""' 2>/dev/null || echo "")
 MODEL_PLAN=$(jq -r '.model // ""' ~/.claude/settings.json 2>/dev/null || echo "")
 
 # Check if usage API cache is fresh
@@ -195,14 +196,61 @@ if [[ -n "$SESSION_ID" ]] && command -v claude-session-sync >/dev/null 2>&1; the
         if [[ "$IS_NEW_SESSION" == "true" ]]; then
             claude-session-sync sync 2>/dev/null || true
             claude-session-sync prune 2>/dev/null || true
-            claude-session-sync token-sync 2>/dev/null || true
-            claude-session-sync token-prune 2>/dev/null || true
             claude-session-sync cost-prune 2>/dev/null || true
         else
             claude-session-sync sync 2>/dev/null || true
-            claude-session-sync token-sync 2>/dev/null || true
         fi
     ) &
+fi
+
+# Per-model cost ledger: track 7-day cost per model class
+MODEL_COST_LEDGER="/tmp/claude-model-cost-ledger"
+
+# Determine model class from session JSON's model.id
+MODEL_CLASS=""
+if [[ "$MODEL_ID" =~ haiku ]]; then MODEL_CLASS="haiku"
+elif [[ "$MODEL_ID" =~ sonnet ]]; then MODEL_CLASS="sonnet"
+elif [[ "$MODEL_ID" =~ opus ]]; then MODEL_CLASS="opus"
+fi
+
+# Append cost delta to per-model ledger
+if [[ -n "$MODEL_CLASS" ]] && [[ -n "${QUERY_COST:-}" ]] \
+    && (( $(awk "BEGIN {print (${QUERY_COST:-0} > 0.0001)}") )); then
+    echo "$(date +%s) $MODEL_CLASS $QUERY_COST" >> "$MODEL_COST_LEDGER"
+fi
+
+# Prune on new session start (drop entries > 8 days old)
+if [[ "${IS_NEW_SESSION:-false}" == "true" ]] && [[ -f "$MODEL_COST_LEDGER" ]]; then
+    prune_ts=$(($(date +%s) - 8 * 86400))
+    awk -v cutoff="$prune_ts" '$1 >= cutoff' "$MODEL_COST_LEDGER" > "${MODEL_COST_LEDGER}.tmp"
+    mv "${MODEL_COST_LEDGER}.tmp" "$MODEL_COST_LEDGER"
+fi
+
+# Sum 7-day costs per model (single awk pass)
+HAIKU_COST_7D=0
+OPUS_COST_7D=0
+if [[ -f "$MODEL_COST_LEDGER" ]]; then
+    cutoff_ts=$(($(date +%s) - 7 * 86400))
+    read -r HAIKU_COST_7D OPUS_COST_7D <<< $(
+        awk -v cutoff="$cutoff_ts" '
+            $1 >= cutoff && $2 == "haiku" { h += $3 }
+            $1 >= cutoff && $2 == "opus"  { o += $3 }
+            END { printf "%.4f %.4f", h+0, o+0 }
+        ' "$MODEL_COST_LEDGER" 2>/dev/null || echo "0 0")
+fi
+
+# Bootstrap: if ledger has no cost for a model but we have token data,
+# convert tokens to approximate cost and seed the ledger (one-time migration).
+# Uses output token pricing: Haiku $1.25/MTok, Opus $75/MTok
+if (( $(awk "BEGIN {print (${HAIKU_COST_7D:-0} < 0.0001 && ${HAIKU_TOKENS:-0} > 0)}") )); then
+    bootstrap_cost=$(awk "BEGIN {printf \"%.4f\", ${HAIKU_TOKENS} * 0.00000125}")
+    echo "$(date +%s) haiku $bootstrap_cost" >> "$MODEL_COST_LEDGER"
+    HAIKU_COST_7D="$bootstrap_cost"
+fi
+if (( $(awk "BEGIN {print (${OPUS_COST_7D:-0} < 0.0001 && ${OPUS_TOKENS:-0} > 0)}") )); then
+    bootstrap_cost=$(awk "BEGIN {printf \"%.4f\", ${OPUS_TOKENS} * 0.000075}")
+    echo "$(date +%s) opus $bootstrap_cost" >> "$MODEL_COST_LEDGER"
+    OPUS_COST_7D="$bootstrap_cost"
 fi
 
 # Windowed costs from Firebase (pre-formatted by format_money, no ANSI)
@@ -375,9 +423,8 @@ sonnet_pct=${SONNET_PCT}
 extra_enabled=${EXTRA_ENABLED}
 extra_used=${EXTRA_USED}
 extra_limit=${EXTRA_LIMIT}
-haiku_tokens=${HAIKU_TOKENS}
-sonnet_tokens=${SONNET_TOKENS}
-opus_tokens=${OPUS_TOKENS}
+haiku_cost_7d=${HAIKU_COST_7D}
+opus_cost_7d=${OPUS_COST_7D}
 session_cost=${SESSION_COST}
 query_cost=${QUERY_COST}
 cost_5h=${COST_5H}

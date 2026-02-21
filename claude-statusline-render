@@ -134,9 +134,8 @@ sonnet_pct="null"
 extra_enabled="false"
 extra_used=0
 extra_limit=50
-haiku_tokens=0
-sonnet_tokens=0
-opus_tokens=0
+haiku_cost_7d=0
+opus_cost_7d=0
 session_cost=0
 query_cost=""
 cost_5h=""
@@ -281,8 +280,8 @@ if [[ "${five_hour_pct:-?}" != "?" ]] || [[ "${seven_day_pct:-?}" != "?" ]]; the
     MODELS_OUTPUT=""
     FIRST_MODEL=true
 
-    if [[ "${haiku_tokens:-0}" -gt 0 ]]; then
-        hval="${DARK_GRAY}H${RESET}${COLON}${BRIGHT_BLUE}$(format_tokens "${haiku_tokens:-0}")${RESET}"
+    if (( $(awk "BEGIN {print (${haiku_cost_7d:-0} > 0.0001)}") )); then
+        hval="${DARK_GRAY}H${RESET}${COLON}${BRIGHT_BLUE}$(format_money "${haiku_cost_7d}")${RESET}"
         if [[ "$FIRST_MODEL" == "true" ]]; then
             MODELS_OUTPUT="$hval"; FIRST_MODEL=false
         else
@@ -299,8 +298,8 @@ if [[ "${five_hour_pct:-?}" != "?" ]] || [[ "${seven_day_pct:-?}" != "?" ]]; the
         fi
     fi
 
-    if [[ "${opus_tokens:-0}" -gt 0 ]]; then
-        oval="${DARK_GRAY}O${RESET}${COLON}${BRIGHT_BLUE}$(format_tokens "${opus_tokens:-0}")${RESET}"
+    if (( $(awk "BEGIN {print (${opus_cost_7d:-0} > 0.0001)}") )); then
+        oval="${DARK_GRAY}O${RESET}${COLON}${BRIGHT_BLUE}$(format_money "${opus_cost_7d}")${RESET}"
         if [[ "$FIRST_MODEL" == "true" ]]; then
             MODELS_OUTPUT="$oval"; FIRST_MODEL=false
         else

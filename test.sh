@@ -241,20 +241,46 @@ context_pct=78
 model_name=Sonnet 4.6
 EOF
 
-label "with per-model breakdown (H + S + O)"
+label "with per-model breakdown (H + S + O) - cost-based"
 "$RENDER" <<'EOF'
 five_hour_pct=42
 seven_day_pct=65
 sonnet_pct=58
-haiku_tokens=12000
-sonnet_tokens=245000
-opus_tokens=18500
+haiku_cost_7d=0.02
+opus_cost_7d=5.13
 session_cost=12.34
 monthly_total=536
 days_elapsed=6
 days_remaining=22
 context_pct=15
 model_name=Sonnet 4.6
+EOF
+
+label "with per-model breakdown (H only, sub-cent)"
+"$RENDER" <<'EOF'
+five_hour_pct=42
+seven_day_pct=65
+sonnet_pct=58
+haiku_cost_7d=0.0015
+session_cost=0.05
+monthly_total=12
+days_elapsed=3
+days_remaining=25
+context_pct=8
+model_name=Haiku 4.5
+EOF
+
+label "with per-model breakdown (O only, large cost)"
+"$RENDER" <<'EOF'
+five_hour_pct=80
+seven_day_pct=90
+opus_cost_7d=42.75
+session_cost=42.75
+monthly_total=890
+days_elapsed=20
+days_remaining=8
+context_pct=45
+model_name=Opus 4.6
 EOF
 
 label "with windowed Firebase costs"
@@ -339,9 +365,8 @@ five_hour_resets_at=2099-01-01T23:00:00.000Z
 seven_day_pct=65
 seven_day_resets_at=2099-01-05T00:00:00.000Z
 sonnet_pct=58
-haiku_tokens=12000
-sonnet_tokens=245000
-opus_tokens=18500
+haiku_cost_7d=0.02
+opus_cost_7d=5.13
 cost_5h=$2.50
 cost_7d=18¢
 session_cost=12.34
