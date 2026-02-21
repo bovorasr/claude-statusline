@@ -18,6 +18,13 @@ fi
 CACHE_FILE="/tmp/claude-usage-cache"
 CACHE_MAX_AGE=30 # seconds - usage data doesn't change that fast
 
+GIT_CACHE_FILE="/tmp/claude-git-status-cache"
+GIT_CACHE_MAX_AGE=5  # seconds
+
+# Extract workspace paths from input JSON
+PROJECT_DIR=$(echo "$INPUT" | jq -r '.workspace.project_dir // .cwd // ""' 2>/dev/null || echo "")
+CURRENT_DIR=$(echo "$INPUT" | jq -r '.workspace.current_dir // ""' 2>/dev/null || echo "")
+
 # Check if cache is fresh enough
 cache_is_fresh() {
     if [[ ! -f "$CACHE_FILE" ]]; then
@@ -246,6 +253,7 @@ LIGHT_PURPLE=$'\033[38;5;141m'   # For query cost and monthly total
 SESSION_PURPLE=$'\033[38;5;147m' # For session total (stands out from the others)
 DIM=$'\033[2m'                   # For separators
 DARK_GRAY=$'\033[90m'         # For model letters (H/S/O)
+OBSIDIAN_PURPLE=$'\033[38;5;135m'  # For Obsidian vault diamond icon
 RESET=$'\033[0m'
 
 # Color a dollar amount based on overage limit
@@ -335,6 +343,187 @@ format_tokens() {
     else
         echo "$tokens"
     fi
+}
+
+# Check if git cache is fresh (same portable pattern as cache_is_fresh)
+git_cache_is_fresh() {
+    if [[ ! -f "$GIT_CACHE_FILE" ]]; then
+        return 1
+    fi
+
+    local now=$(date +%s)
+    local mtime
+    if stat -f %m "$GIT_CACHE_FILE" >/dev/null 2>&1; then
+        mtime=$(stat -f %m "$GIT_CACHE_FILE")
+    else
+        mtime=$(stat -c %Y "$GIT_CACHE_FILE")
+    fi
+    local age=$((now - mtime))
+
+    [[ $age -lt $GIT_CACHE_MAX_AGE ]]
+}
+
+# Gather git info for a directory, cache as pipe-delimited string
+# Output format: branch|remote_branch|ahead|behind|added|deleted|modified|conflicts|untracked|has_remote
+get_git_info() {
+    local dir="$1"
+
+    # Check cache first
+    if git_cache_is_fresh; then
+        cat "$GIT_CACHE_FILE" 2>/dev/null
+        return
+    fi
+
+    # Check if directory is in a git repo
+    if ! git -C "$dir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        echo "" > "$GIT_CACHE_FILE"
+        echo ""
+        return
+    fi
+
+    # Branch name (handles detached HEAD)
+    local branch
+    branch=$(git -C "$dir" symbolic-ref --short HEAD 2>/dev/null || git -C "$dir" rev-parse --short HEAD 2>/dev/null || echo "HEAD")
+
+    # Remote tracking branch
+    local remote_branch
+    remote_branch=$(git -C "$dir" rev-parse --abbrev-ref @{upstream} 2>/dev/null || echo "")
+
+    # Ahead/behind counts
+    local ahead=0
+    local behind=0
+    if [[ -n "$remote_branch" ]]; then
+        local ab
+        ab=$(git -C "$dir" rev-list --left-right --count HEAD...@{upstream} 2>/dev/null || echo "0	0")
+        ahead=$(echo "$ab" | awk '{print $1}')
+        behind=$(echo "$ab" | awk '{print $2}')
+    fi
+
+    # Has remote (even without tracking branch)
+    local has_remote=false
+    if git -C "$dir" remote 2>/dev/null | grep -q .; then
+        has_remote=true
+    fi
+
+    # File status counts from --porcelain
+    local added=0
+    local deleted=0
+    local modified=0
+    local conflicts=0
+    local untracked=0
+
+    while IFS= read -r line; do
+        local xy="${line:0:2}"
+        local x="${xy:0:1}"
+        local y="${xy:1:1}"
+        # Conflicts: UU, AA, DD (merge conflicts)
+        if [[ "$xy" == "UU" ]] || [[ "$xy" == "AA" ]] || [[ "$xy" == "DD" ]]; then
+            conflicts=$((conflicts + 1))
+        # Untracked
+        elif [[ "$xy" == "??" ]]; then
+            untracked=$((untracked + 1))
+        else
+            # Added (staged new file, not conflict)
+            if [[ "$x" == "A" ]] && [[ "$y" != "U" ]]; then
+                added=$((added + 1))
+            fi
+            # Deleted
+            if [[ "$x" == "D" ]] || [[ "$y" == "D" ]]; then
+                deleted=$((deleted + 1))
+            fi
+            # Modified
+            if [[ "$x" == "M" ]] || [[ "$y" == "M" ]] || [[ "$xy" == "MM" ]]; then
+                modified=$((modified + 1))
+            fi
+        fi
+    done < <(git -C "$dir" status --porcelain 2>/dev/null || true)
+
+    local result="${branch}|${remote_branch}|${ahead}|${behind}|${added}|${deleted}|${modified}|${conflicts}|${untracked}|${has_remote}"
+    echo "$result" > "$GIT_CACHE_FILE"
+    echo "$result"
+}
+
+# Build the project/git info line
+build_project_line() {
+    local project_dir="$1"
+    local current_dir="$2"
+    local line=""
+
+    # Obsidian vault detection
+    if [[ -d "${project_dir}/.obsidian" ]]; then
+        line="${OBSIDIAN_PURPLE}◆${RESET} "
+    fi
+
+    # Project directory display
+    local proj_base
+    if [[ "$project_dir" == "$HOME" ]]; then
+        proj_base="~"
+    else
+        proj_base=$(basename "$project_dir")
+    fi
+    line="${line}${CYAN}${proj_base}${RESET}"
+
+    # Current dir (only if different from project_dir)
+    if [[ -n "$current_dir" ]] && [[ "$current_dir" != "$project_dir" ]]; then
+        local cur_base
+        if [[ "$current_dir" == "$HOME" ]]; then
+            cur_base="~"
+        else
+            cur_base=$(basename "$current_dir")
+        fi
+        line="${line}${DIM}->${RESET}${cur_base}"
+    fi
+
+    # Git info
+    local git_data
+    git_data=$(get_git_info "$project_dir")
+
+    if [[ -n "$git_data" ]]; then
+        local branch remote_branch ahead behind added deleted modified conflicts untracked has_remote
+        IFS='|' read -r branch remote_branch ahead behind added deleted modified conflicts untracked has_remote <<< "$git_data"
+
+        # Git icon: cloud if has remote, home if local-only
+        if [[ "$has_remote" == "true" ]]; then
+            line="${line} ${YELLOW}☁${RESET}"
+        else
+            line="${line} ${YELLOW}⌂${RESET}"
+        fi
+
+        # Branch name
+        line="${line}${CYAN}${branch}${RESET}"
+
+        # Remote tracking branch
+        if [[ -n "$remote_branch" ]]; then
+            line="${line}${DIM}->${RESET}${remote_branch}"
+        fi
+
+        # Ahead/behind
+        if [[ "${ahead:-0}" -gt 0 ]]; then
+            line="${line} ${GREEN}↑${ahead}${RESET}"
+        fi
+        if [[ "${behind:-0}" -gt 0 ]]; then
+            line="${line} ${RED}↓${behind}${RESET}"
+        fi
+
+        # File status
+        if [[ "${added:-0}" -gt 0 ]]; then
+            line="${line} ${GREEN}${added}+${RESET}"
+        fi
+        if [[ "${deleted:-0}" -gt 0 ]]; then
+            line="${line} ${RED}${deleted}-${RESET}"
+        fi
+        if [[ "${modified:-0}" -gt 0 ]]; then
+            line="${line} ${YELLOW}${modified}M${RESET}"
+        fi
+        if [[ "${conflicts:-0}" -gt 0 ]]; then
+            line="${line} ${RED}${conflicts}⚡${RESET}"
+        fi
+        if [[ "${untracked:-0}" -gt 0 ]]; then
+            line="${line} ${YELLOW}${untracked}?${RESET}"
+        fi
+    fi
+
+    echo "$line"
 }
 
 # Calculate time strings
@@ -580,4 +769,14 @@ else
     OUTPUT="$OUTPUT ${SEP} ${BRIGHT_CYAN}${CONTEXT_PCT}%${RESET}"
 fi
 
+# Build project/git info line
+PROJECT_LINE=""
+if [[ -n "$PROJECT_DIR" ]]; then
+    PROJECT_LINE=$(build_project_line "$PROJECT_DIR" "$CURRENT_DIR")
+fi
+
+# Output: project line above cost line
+if [[ -n "$PROJECT_LINE" ]]; then
+    echo "$PROJECT_LINE"
+fi
 echo "$OUTPUT"

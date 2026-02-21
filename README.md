@@ -18,6 +18,7 @@ Portable Claude Code statusline that works on **macOS, Linux, and devcontainers*
 - ✅ **Context window percentage** - monitor token usage
 - ✅ **Model drift detection** - shows both configured and actual model
 - ✅ **Overage tracking** - if you have overage enabled
+- ✅ **Project/git info line** - workspace directory, Obsidian vault detection, git branch, remote, ahead/behind, and file status (5s cached)
 
 ## Installation
 
@@ -108,12 +109,44 @@ Without Firebase, the statusline still works - monthly totals show `?`.
 
 ## What It Shows
 
-Example statusline (with Firebase configured):
+Example statusline (with Firebase configured, in a git repo):
 ```
+◆ my-vault->subfolder ☁main->origin/main ↑2 ↓1 3M 1?
 7% $3.50 2h15m | 18% $28.40 6d18h = S:11% + O:245K | +6/-22d 25¢/$12.34/$513 $0/$50 | opusplan/Sonnet 4.6 15%
 ```
 
-Color does the labeling — no section headers needed. Left to right:
+The statusline has two lines when workspace info is available:
+1. **Project/git info line** (top) — workspace context and git status
+2. **Cost/quota line** (bottom) — usage, costs, and model info
+
+If no workspace info is passed by Claude Code, only the cost/quota line is shown.
+
+---
+
+**Project/git info line** — left to right:
+
+| Element | Condition | Format |
+|---------|-----------|--------|
+| `◆` | `.obsidian/` dir in project root | Purple diamond (Obsidian vault) |
+| `my-vault` | Always (if project dir known) | Project basename in cyan; `~` if HOME |
+| `->subfolder` | Current dir ≠ project dir | Current dir basename with dim arrow |
+| `☁` | Git repo with remote | Yellow cloud |
+| `⌂` | Git repo, local only | Yellow home |
+| `main` | In a git repo | Branch name in cyan |
+| `->origin/main` | Has tracking branch | Remote branch with dim arrow |
+| `↑2` | Ahead of remote | Green |
+| `↓1` | Behind remote | Red |
+| `3M` | Modified files | Yellow |
+| `1?` | Untracked files | Yellow |
+| `N+` | Added (staged) files | Green |
+| `N-` | Deleted files | Red |
+| `N⚡` | Merge conflicts | Red |
+
+---
+
+**Cost/quota line** — left to right:
+
+Color does the labeling — no section headers needed.
 
 **5-hour quota group:**
 - `7%` - 5-hour quota usage (green <70%, yellow 70–90%, red ≥90%)
@@ -141,11 +174,13 @@ Color does the labeling — no section headers needed. Left to right:
 | Color | Meaning |
 |---|---|
 | Green/Yellow/Red | Quota % thresholds (<70% / 70–90% / ≥90%) |
-| Cyan | Time periods, billing cycle days |
+| Cyan | Time periods, billing cycle days, directory names, branch names |
 | Bright cyan | Context window % |
 | Dark cyan | Model names |
 | Blue | Token counts |
 | Purple | Cost values |
+| Purple (135) | Obsidian vault icon |
+| Yellow | Git icons, modified/untracked file counts |
 | Dark gray | Model letter prefixes (S/O/H) |
 
 ## Platform Support
