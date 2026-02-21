@@ -221,7 +221,9 @@ if [[ -n "${project_dir:-}" ]]; then
         line="${line}${CYAN}${git_branch}${RESET}"
 
         if [[ -n "${git_remote_branch:-}" ]]; then
-            line="${line}${DIM}->${RESET}${CYAN}${git_remote_branch}${RESET}"
+            # Strip redundant local branch name from remote (e.g. origin/main -> origin)
+            remote_display="${git_remote_branch%/${git_branch}}"
+            line="${line}${DIM}->${RESET}${CYAN}${remote_display}${RESET}"
         fi
 
         if [[ "${git_ahead:-0}" -gt 0 ]]; then
