@@ -354,15 +354,18 @@ elif [[ -n "${model_plan:-}" ]] && [[ "${model_plan:-}" != "null" ]]; then
     MODEL_DISPLAY="${CYAN}${model_plan}${RESET}"
 fi
 
+MODEL_CONTEXT_BLOCK=""
 if [[ -n "$MODEL_DISPLAY" ]]; then
-    OUTPUT="$OUTPUT ${SEP} ${MODEL_DISPLAY} ${BRIGHT_CYAN}${context_pct:-0}%${RESET}"
+    MODEL_CONTEXT_BLOCK="${MODEL_DISPLAY} ${BRIGHT_CYAN}${context_pct:-0}%${RESET}"
 else
-    OUTPUT="$OUTPUT ${SEP} ${BRIGHT_CYAN}${context_pct:-0}%${RESET}"
+    MODEL_CONTEXT_BLOCK="${BRIGHT_CYAN}${context_pct:-0}%${RESET}"
 fi
 
 # ── Output ─────────────────────────────────────────────────────────────────
 
 if [[ -n "$PROJECT_LINE" ]]; then
-    echo "$PROJECT_LINE"
+    echo "$PROJECT_LINE ${SEP} ${MODEL_CONTEXT_BLOCK}"
+else
+    echo "${MODEL_CONTEXT_BLOCK}"
 fi
 echo "$OUTPUT"
