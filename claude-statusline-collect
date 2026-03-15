@@ -174,7 +174,7 @@ fi
 # WAL write + background sync (side effects - no output needed here)
 QUERY_COST=""
 if [[ -n "$SESSION_ID" ]] && command -v claude-session-sync >/dev/null 2>&1; then
-    WAL_FILE="/tmp/claude-session-wal/$SESSION_ID"
+    WAL_FILE="$HOME/.claude/session-wal/$SESSION_ID"
     IS_NEW_SESSION=false
     if [[ ! -f "$WAL_FILE" ]]; then
         IS_NEW_SESSION=true
@@ -184,8 +184,10 @@ if [[ -n "$SESSION_ID" ]] && command -v claude-session-sync >/dev/null 2>&1; the
     claude-session-sync wal-write "$SESSION_ID" "$SESSION_COST" 2>/dev/null || true
 
     # Read last query cost delta (written by wal-write above)
+    # Atomically consume the file to prevent duplicate ledger entries on repeated reads
     if [[ -f "/tmp/claude-last-query-cost" ]]; then
         read -r _qc_session _qc_cost < "/tmp/claude-last-query-cost" 2>/dev/null || true
+        rm -f "/tmp/claude-last-query-cost"
         if [[ "${_qc_session:-}" == "$SESSION_ID" ]]; then
             QUERY_COST="${_qc_cost:-}"
         fi

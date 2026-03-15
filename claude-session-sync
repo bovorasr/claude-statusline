@@ -8,7 +8,7 @@
 
 set -euo pipefail
 
-WAL_DIR="/tmp/claude-session-wal"
+WAL_DIR="$HOME/.claude/session-wal"
 SYNC_TS_FILE="/tmp/claude-session-sync-ts"
 READ_CACHE_FILE="/tmp/claude-session-sync-read"
 SYNC_INTERVAL=10  # seconds
@@ -18,7 +18,7 @@ TOKEN_SYNC_TS_FILE="/tmp/claude-token-sync-ts"
 TOKEN_READ_CACHE_FILE="/tmp/claude-token-read-cache"
 TOKEN_READ_CACHE_TTL=60  # seconds
 
-COST_DELTA_DIR="/tmp/claude-cost-delta-pending"
+COST_DELTA_DIR="$HOME/.claude/cost-delta-pending"
 COST_DELTAS_CACHE="/tmp/claude-cost-deltas-cache"
 COST_DELTAS_CACHE_TTL=60  # seconds
 
@@ -291,10 +291,15 @@ cmd_read() {
     if [[ $current_day -ge $billing_day ]]; then
         cycle_start="${current_month}-${billing_day}"
     else
-        cycle_start=$(date -v-1m +%Y-%m)-${billing_day}
+        if date -d "1 month ago" +%Y-%m >/dev/null 2>&1; then
+            cycle_start=$(date -d "1 month ago" +%Y-%m)-${billing_day}
+        else
+            cycle_start=$(date -v-1m +%Y-%m)-${billing_day}
+        fi
     fi
 
-    local cycle_start_ts=$(date -j -f "%Y-%m-%d" "$cycle_start" +%s 2>/dev/null || echo "0")
+    local cycle_start_ts
+    cycle_start_ts=$(date -d "$cycle_start" +%s 2>/dev/null || date -j -f "%Y-%m-%d" "$cycle_start" +%s 2>/dev/null || echo "0")
 
     # Calculate total cost from all sessions in billing cycle
     local total_cost=$(echo "$sessions" | jq --arg cycle_ts "$cycle_start_ts" '
